@@ -43,6 +43,9 @@ const SECTION_KINDS: { value: TemplateSectionUpdate["kind"]; label: string }[] =
   { value: "table", label: "جدول" },
 ];
 
+/** Marks a draft the editor made itself, which has no stored row behind it. */
+const NEW_FIELD_PREFIX = "new-";
+
 const FIELD_TYPES = ["text", "image", "qr", "barcode", "link", "table"] as const;
 const ALIGNS = ["right", "center", "left"] as const;
 const FITS = ["shrink", "clip", "wrap"] as const;
@@ -74,6 +77,13 @@ function toDraft(field: TemplateDetail["fields"][number]): Draft {
     calibration_dy: field.calibration_dy,
     is_required: field.is_required,
     rtl: field.rtl,
+    // Carried through, not defaulted: saving is a full replace, so a column the
+    // editor reads but does not write back is a column it quietly empties. The
+    // steps page's captions are almost entirely prefix — dropping them here
+    // would leave the booklet five numbered icons and no instructions.
+    prefix: field.prefix,
+    suffix: field.suffix,
+    default_value: field.default_value,
     table_spec: field.table_spec,
   };
 }
@@ -160,7 +170,9 @@ function TemplateEditor() {
   }
 
   function addField(seed?: Partial<Draft>) {
-    const uid = `new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const uid = `${NEW_FIELD_PREFIX}${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 7)}`;
     const draft: Draft = {
       uid,
       key: `field_${fields.length + 1}`,
@@ -185,6 +197,9 @@ function TemplateEditor() {
       calibration_dy: 0,
       is_required: false,
       rtl: true,
+      prefix: "",
+      suffix: "",
+      default_value: "",
       table_spec: null,
       ...seed,
     };
@@ -251,10 +266,15 @@ function TemplateEditor() {
       await api.saveSections(id, sections);
       const detail = await api.saveFields(
         id,
-        fields.map(({ uid, ...rest }) => {
-          void uid;
-          return rest;
-        }),
+        // The uid is the stored row's id for a field that already exists, and a
+        // local placeholder for one just drawn. Sent as `id`, it is what lets a
+        // renamed key keep its row — and with it the columns this screen has no
+        // control for, the photo-frame masks among them. A drawn field sends no
+        // id and the server makes a new row.
+        fields.map(({ uid, ...rest }) => ({
+          ...rest,
+          ...(uid.startsWith(NEW_FIELD_PREFIX) ? {} : { id: uid }),
+        })),
       );
       setTemplate(detail);
       setFields(detail.fields.map(toDraft));

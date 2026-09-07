@@ -54,6 +54,13 @@
   .panel {
     @apply bg-surface border border-line;
   }
+  .tab-strip {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .tab-strip::-webkit-scrollbar {
+    display: none;
+  }
   .field-label {
     @apply block text-sm text-muted mb-1.5;
   }

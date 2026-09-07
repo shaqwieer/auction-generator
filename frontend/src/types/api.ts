@@ -134,6 +134,17 @@ export interface TemplateFieldOut {
   calibration_dy: number;
   is_required: boolean;
   rtl: boolean;
+  /**
+   * Fixed wording printed around the value, and what prints without one.
+   *
+   * A caption that is mostly the guide's sentence asks only for the words that
+   * change: «سداد قيمة المشاركة في المزاد (…)» is prefix, slot and suffix, so
+   * the client cannot mistype the design. `{key}` in the default names one of
+   * the booklet's own facts — see PagePlanOut.booklet.
+   */
+  prefix: string;
+  suffix: string;
+  default_value: string;
   origin: string;
   table_spec: TableSpec | null;
 }
@@ -191,6 +202,8 @@ export interface PagePlanOut {
   fields_by_page: Record<string, TemplateFieldOut[]>;
   record_keys: string[];
   predicted_pages: number;
+  /** What the booklet knows about itself: the auction's name, the platform's. */
+  booklet: Record<string, string>;
 }
 
 export interface TemplateDetail extends TemplateOut {
@@ -213,6 +226,14 @@ export interface TemplateSectionUpdate {
 }
 
 export interface TemplateFieldUpdate {
+  /**
+   * Which stored row this is, for a field that already exists.
+   *
+   * A field is the row, not its name: without this a renamed key would be
+   * saved as a brand-new field and lose every column the editor does not
+   * send — the photo-frame masks among them. Omitted for a field just drawn.
+   */
+  id?: string;
   key: string;
   label: string;
   page_index: number;
@@ -235,6 +256,9 @@ export interface TemplateFieldUpdate {
   calibration_dy: number;
   is_required: boolean;
   rtl: boolean;
+  prefix: string;
+  suffix: string;
+  default_value: string;
   table_spec: TableSpec | null;
 }
 

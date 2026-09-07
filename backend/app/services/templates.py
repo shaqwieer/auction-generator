@@ -170,6 +170,9 @@ def import_template(
                 clip=raw.get("clip") or None,
                 clip_holes=raw.get("clip_holes") or None,
                 origin=raw.get("origin", ""),
+                prefix=raw.get("prefix", ""),
+                suffix=raw.get("suffix", ""),
+                default_value=raw.get("default_value", ""),
                 table_spec=raw.get("table"),
             )
         )
@@ -230,6 +233,9 @@ def field_to_spec(row: TemplateField) -> FieldSpec:
         clip=list(row.clip or []),
         clip_holes=list(row.clip_holes or []),
         origin=row.origin,
+        prefix=row.prefix,
+        suffix=row.suffix,
+        default_value=row.default_value,
         table=table,
     )
 

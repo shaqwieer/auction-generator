@@ -182,18 +182,65 @@ def _merged(
     return values
 
 
+#: Written into every page's values; see ``overlay.DEFAULTS_KEY``.
+DEFAULTS_KEY = "__booklet__"
+
+#: Facts that belong to the issue rather than to any one page. They are typed
+#: once -- on the auction-info page -- and other pages print them again; the
+#: steps page names both, and asking for them a third time there would be
+#: asking twice for one fact.
+BOOKLET_KEYS: tuple[str, ...] = ("auction_title", "platform_name")
+
+
+def booklet_facts(
+    static: dict[str, Any],
+    nodes: list[dict[str, Any]],
+    project_name: str = "",
+) -> dict[str, str]:
+    """What the booklet knows about itself, for a field that defaults from it.
+
+    Which node carries a fact is not fixed -- ``auction_title`` is drawn on the
+    cover *and* on the auction-info page, and the two can disagree while
+    somebody is halfway through correcting one of them. The first non-empty
+    value in booklet order wins, which is the one nearest the front and so the
+    one the client has been reading from.
+
+    ``auction_title`` always resolves to something: a booklet whose printed
+    title has not been given yet still has the name the project was created
+    with, and «إختيار مزاد (  )» is worse on paper than a working title.
+    """
+    facts: dict[str, str] = {"project_name": project_name.strip()}
+    for key in BOOKLET_KEYS:
+        value = str(static.get(key) or "").strip()
+        if not value:
+            for node in nodes:
+                candidate = str((node.get("values") or {}).get(key) or "").strip()
+                if candidate:
+                    value = candidate
+                    break
+        facts[key] = value
+    if not facts["auction_title"]:
+        facts["auction_title"] = facts["project_name"]
+    return facts
+
+
 def compose_plan(
     nodes: list[dict[str, Any]],
     records: dict[int, dict[str, Any]],
     *,
     static_values: dict[str, Any] | None = None,
     lease_pages: set[int] | None = None,
+    project_name: str = "",
 ) -> list[PageInstance]:
     """The pages a plan produces, in booklet order."""
     return [
         page
         for _, page in compose_plan_indexed(
-            nodes, records, static_values=static_values, lease_pages=lease_pages
+            nodes,
+            records,
+            static_values=static_values,
+            lease_pages=lease_pages,
+            project_name=project_name,
         )
     ]
 
@@ -205,6 +252,7 @@ def compose_plan_indexed(
     static_values: dict[str, Any] | None = None,
     only: str | None = None,
     lease_pages: set[int] | None = None,
+    project_name: str = "",
 ) -> list[tuple[str, PageInstance]]:
     """Expand a project's page plan into one :class:`PageInstance` per page.
 
@@ -305,6 +353,12 @@ def compose_plan_indexed(
                 ))
 
     _point_lease_chips_at_their_page(out, lease_pages)
+    # Every page carries the booklet's own facts, under a reserved key so that
+    # knowing a name never causes a page to print it -- only a field whose
+    # ``default_value`` asks for it does.
+    facts = booklet_facts(static, nodes, project_name)
+    for _, page in out:
+        page.values[DEFAULTS_KEY] = facts
     return out
 
 

@@ -306,6 +306,19 @@ class TemplateField(Base):
     clip_holes: Mapped[list | None] = mapped_column(JSONB)
     origin: Mapped[str] = mapped_column(String(200), default="", nullable=False)
 
+    # Fixed wording printed around the value, and what prints when nothing has
+    # been typed. See FieldSpec.prefix / FieldSpec.default_value: a caption that
+    # is mostly the guide's sentence asks only for the words that change.
+    prefix: Mapped[str] = mapped_column(
+        Text, default="", nullable=False, server_default=""
+    )
+    suffix: Mapped[str] = mapped_column(
+        Text, default="", nullable=False, server_default=""
+    )
+    default_value: Mapped[str] = mapped_column(
+        Text, default="", nullable=False, server_default=""
+    )
+
     # Only populated for type == "table".
     table_spec: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 

@@ -303,17 +303,59 @@ RULES: dict[str, list[dict[str, Any]]] = {
         ], "size": 14.6},
     ],
     "steps": [
-        # The five captions are per-platform boilerplate -- the guide has them
-        # edited to suit the platform -- and two of them name this auction and
-        # this platform outright. Split back into the steps they are drawn as.
+        # The five captions are the guide's own sentences, and only three words
+        # in them belong to this booklet: the platform it is held on and the
+        # auction it is for, plus whether the deposit comes back. So the fixed
+        # wording rides on the field (prefix/suffix) and the client is asked for
+        # the phrase alone -- «اسم المنصة», «اسم المزاد», «قابلة للإسترداد» --
+        # which they cannot mistype into the design.
+        #
+        # Steps 2 and 5 carry nothing that varies, so they are not fields at
+        # all. Baking clears only what a field will draw over, so «إستعراض
+        # المزادات» and «الفوز بالمزاد» stay exactly as the designer set them,
+        # never redrawn and so unable to shift.
+        #
+        # Order is the sweep's: right to left, the top row of three and then the
+        # bottom two -- which is the order the badges are numbered in, checked
+        # against the drawn numbers rather than against extraction. Extraction
+        # returns these scrambled: «الفوز بالمزاد» comes out third and is drawn
+        # fifth, so a list built from reading order would print the client's
+        # money back to them before they had bid.
+        #
+        # The newlines are the designer's line breaks, kept rather than measured
+        # so the caption wraps where the artwork wraps.
         {"match": "#15385F", "columns": [
-            ("step_1", "الخطوة ١"),
-            ("step_2", "الخطوة ٢"),
-            ("step_3", "الخطوة ٣"),
-            ("step_4", "الخطوة ٤"),
-            ("step_5", "الخطوة ٥"),
-            ("steps_qr_caption", "تعليق رمز المنصة"),
-        ], "size": 12.6, "gap": 26.0, "fit": Fit.WRAP},
+            {"key": "steps_platform", "label": "اسم المنصة",
+             "prefix": "تسجيل الدخول في\n",
+             "default_value": "{platform_name}"},
+            None,                       # إستعراض المزادات — the designer's
+            {"key": "steps_refundable", "label": "قابلة للاسترداد",
+             "prefix": "سداد قيمة المشاركة في\nالمزاد (", "suffix": ")",
+             "default_value": "قابلة للإسترداد"},
+            # The designer sets spaces inside these brackets, and an
+            # ordinary space is somewhere a line may break: a name longer
+            # than the sample «أعيان حائل» pushed the closing bracket onto a
+            # line of its own. A no-break space binds each bracket to the
+            # word beside it and prints at the same width -- the name may
+            # still break between its own words, which is where a break
+            # belongs.
+            {"key": "steps_auction_name", "label": "اسم المزاد",
+             "prefix": "إختيار مزاد (\u00a0",
+             "suffix": "\u00a0)\nوالدخول للمشاركة",
+             "default_value": "{auction_title}"},
+            None,                       # الفوز بالمزاد — the designer's
+        ], "size": 12.6, "gap": 26.0, "fit": Fit.WRAP,
+           # The face and the leading the designer set these in. Medium would be
+           # a heavier caption than the page is drawn with, and 1.0 would close
+           # the two lines up tighter than the artwork sets them.
+           "weight": "Light", "line_height": 1.18, "pad_x": 3.0,
+           # The vertical twin of pad_x. A derived box starts at the *ink* of
+           # the first line; the engine lays a line out from its ascender, so
+           # the caption landed 1.44pt below the one the designer drew. Measured
+           # against the export, not guessed -- the two untouched captions on
+           # this page (steps 2 and 5) diff to zero, so any offset in the other
+           # three is ours.
+           "nudge_y": -1.44},
     ],
     "lot_table": [],   # handled by table recovery
     "rent_table": [],  # handled by table recovery
@@ -920,24 +962,49 @@ def _apply_rules(
             if rule.get("grow"):
                 groups = _grown_chips(groups, page_rect)
             # Ragged on purpose: a page carries as many chips as it carries.
-            for (key, label), box in zip(rule["columns"], groups, strict=False):
+            for column, box in zip(rule["columns"], groups, strict=False):
+                # ``None`` claims its place in the sweep without making a field:
+                # the chip is the designer's and nothing about it varies, so it
+                # is left alone -- and, being no field, it is never cleared.
+                if column is None:
+                    continue
+                # A plain pair is a chip that holds only its value. A mapping
+                # can also carry the wording printed around it and what shows
+                # when nothing has been typed.
+                if isinstance(column, tuple):
+                    column = {"key": column[0], "label": column[1]}
+                # A derived box is the *ink* of the designer's line, and a line
+                # needs its side bearings too -- measured at 3pt for every
+                # caption on this page, in both directions. Without them the
+                # engine wraps a line the designer set as one, and the caption
+                # grows a third row it was never drawn with. Padded evenly, so
+                # a centred line stays on the centre it was drawn on.
+                pad = rule.get("pad_x", 0.0)
+                if pad:
+                    box = fitz.Rect(box.x0 - pad, box.y0, box.x1 + pad, box.y1)
                 specs.append(
                     FieldSpec(
-                        key=key,
+                        key=column["key"],
                         page_index=page_index,
                         rect=NormRect.from_points(box, page_rect),
                         type=FieldType.TEXT,
-                        label=label,
+                        label=column.get("label", ""),
                         align=rule.get("align", Align.CENTER),
+                        font_weight=rule.get("weight", "Medium"),
                         font_size_pt=(
                             sum(rule["sizes"]) / 2
                             if rule.get("sizes")
                             else rule["size"]
                         ),
                         color=match,
+                        line_height=rule.get("line_height", 1.0),
+                        calibration_dy=rule.get("nudge_y", 0.0),
                         fit=rule.get("fit", Fit.SHRINK),
                         rtl=rule.get("rtl", True),
-                        origin=f"rule:{key}/chip-column",
+                        prefix=column.get("prefix", ""),
+                        suffix=column.get("suffix", ""),
+                        default_value=column.get("default_value", ""),
+                        origin=f"rule:{column['key']}/chip-column",
                     )
                 )
             continue

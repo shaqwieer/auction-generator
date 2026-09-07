@@ -491,6 +491,30 @@ def save_sections(
     return get_template(template_id, db, _)
 
 
+def _match(
+    field: TemplateFieldUpdate,
+    by_id: dict[uuid.UUID, TemplateField],
+    by_name: dict[tuple[int, str], TemplateField],
+    claimed: set[uuid.UUID],
+) -> TemplateField | None:
+    """The stored row a saved field is a new version of, if there is one.
+
+    By id first: that survives a rename, and renaming keys is most of what the
+    editor is for. By (page, key) second, which covers a client too old to send
+    an id and an id that no longer exists -- after a template rebuild, say. Both
+    skip a row another entry has already claimed, so a payload that names one
+    row twice adds a field rather than quietly merging two.
+    """
+    if field.id is not None:
+        row = by_id.get(field.id)
+        if row is not None and row.id not in claimed:
+            return row
+    row = by_name.get((field.page_index, field.key))
+    if row is not None and row.id not in claimed:
+        return row
+    return None
+
+
 @router.put("/templates/{template_id}/fields", response_model=TemplateDetail)
 def save_fields(
     template_id: uuid.UUID,
@@ -498,7 +522,24 @@ def save_fields(
     db: DB,
     _: Staff,
 ) -> TemplateDetail:
-    """Bulk save from the template editor. Replaces the whole field set."""
+    """Bulk save from the template editor.
+
+    The field set the editor sends is the field set the template ends up with --
+    but a *column* it does not send is a column it is not asking to change, and
+    keeps whatever it had.
+
+    This used to delete every row and rebuild from the payload, which made the
+    editor responsible for round-tripping every column in the table. It was not:
+    `preserve_aspect`, `clip` and `clip_holes` have no control on that screen and
+    were never sent back, so each save quietly reset them. Those are how a
+    photograph is masked to the frame the designer drew and held off the number
+    badge on top of it -- so correcting one field's label turned every photo
+    frame in the booklet back into a rectangle, silently, with the screen still
+    showing exactly what the operator expected.
+
+    A column added to the table in future is safe here by construction, rather
+    than safe until somebody forgets.
+    """
     template = _get_template(db, template_id)
 
     # A repeated key across pages is legitimate -- the same lot value prints on
@@ -515,12 +556,35 @@ def save_fields(
             f"مفتاح مكرّر على نفس الصفحة: {clashes[0][1]} (صفحة {clashes[0][0] + 1})",
         )
 
-    for field in template.fields:
-        db.delete(field)
-    db.flush()
+    # A field is the row, not its name. Matched by id where the editor sends one,
+    # so renaming a key -- which is most of what the editor is for -- moves the
+    # row rather than replacing it with a blank one.
+    by_id = {row.id: row for row in template.fields}
+    by_name = {(row.page_index, row.key): row for row in template.fields}
 
+    kept: set[uuid.UUID] = set()
     for field in payload:
-        db.add(TemplateField(template_id=template.id, **field.model_dump()))
+        row = _match(field, by_id, by_name, kept)
+        if row is None:
+            # Genuinely new: the model's own defaults apply to what was omitted.
+            row = TemplateField(
+                template_id=template.id, **field.model_dump(exclude={"id"})
+            )
+            db.add(row)
+            db.flush()
+        else:
+            # Only what was actually sent. Everything else is not the editor's
+            # to have an opinion about, so it keeps what it had.
+            for column, value in field.model_dump(
+                exclude_unset=True, exclude={"id"}
+            ).items():
+                setattr(row, column, value)
+        kept.add(row.id)
+
+    for row in template.fields:
+        if row.id not in kept:
+            db.delete(row)
+
     template.version += 1
     db.flush()
     db.refresh(template)

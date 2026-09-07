@@ -663,6 +663,7 @@ def to_instances(
         record_map(records),
         static_values=_static(project),
         lease_pages=lease_page_indices(project.template),
+        project_name=project.name,
     )
 
 
@@ -683,6 +684,7 @@ def instances_for_node(
             static_values=_static(project),
             only=node_id,
             lease_pages=lease_page_indices(project.template),
+            project_name=project.name,
         )
         if owner == node_id
     ]

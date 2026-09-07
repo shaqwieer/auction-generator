@@ -37,8 +37,18 @@ export function LeaseRows({
   // Adopted from the server, but never over the top of a row being typed: the
   // save returns the plan it was given, and typing carries on while it flies.
   const typing = useRef(false);
+  /**
+   * Rows committed and not yet acknowledged.
+   *
+   * `rows` is rebuilt from the plan, so it arrives again on *every* save the
+   * builder makes — a value typed on the page, a photograph, a layout. Any one
+   * of those landing between a commit and its answer used to put the row back
+   * as it was before the edit. Holding the committed rows until the save that
+   * carried them returns means nothing else can speak for this table.
+   */
+  const unsent = useRef<LeaseRow[] | null>(null);
   useEffect(() => {
-    if (typing.current) return;
+    if (typing.current || unsent.current) return;
     setDraft(rows);
   }, [rows]);
 
@@ -48,7 +58,12 @@ export function LeaseRows({
   const commit = (next: LeaseRow[]) => {
     setDraft(next);
     typing.current = false;
-    void onChange(next);
+    unsent.current = next;
+    void Promise.resolve(onChange(next)).finally(() => {
+      // Only stop holding if nothing has been committed since; otherwise the
+      // later commit is the one still waiting to be answered.
+      if (unsent.current === next) unsent.current = null;
+    });
   };
 
   const move = (index: number, delta: number) => {

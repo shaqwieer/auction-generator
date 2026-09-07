@@ -83,6 +83,38 @@ directory named `alembic` shadows the installed package.
   field will draw over, so a page that is kept but not described keeps the
   designer's sample data printed into the background. `scripts/pagemaps/` says
   what each page is; `test_build_map.py` is the regression net.
+- **A caption can be part design and part data.** خطوات المشاركة is the guide's
+  own sentence with three of this booklet's words in it, so the fixed wording
+  rides on the field (`prefix`/`suffix`) and the client is asked only for the
+  words that change — «اسم المنصة», «اسم المزاد», «قابلة للإسترداد». Asking for
+  the whole caption invited them to mistype the design; asking for nothing left
+  the page blank, because baking clears whatever a field will draw over. The
+  caption is drawn as **one box**, which is how it still wraps and centres the
+  way the designer drew it: carving out only the middle strands the fixed halves
+  when the value changes length. `default_value` is what prints untyped, and
+  `{key}` in it takes one of the booklet's own facts (`compose.booklet_facts` →
+  `overlay.DEFAULTS_KEY`) — the auction and the platform are named on the
+  auction-info page, and naming them again here would be asking twice for one
+  fact. Resolved at draw time, never copied, so a title corrected on the cover
+  corrects this page too.
+- **A caption nobody edits is not a field.** «إستعراض المزادات» and «الفوز
+  بالمزاد» are true of every auction, so they carry no field, are never cleared,
+  and are the designer's own pixels — measured against the export they diff to
+  zero. Making them fields would have them redrawn on every booklet for nothing.
+- A derived box is the **ink** of the designer's line, and a line needs its side
+  bearings too: +3pt horizontally, and the engine lays a line out from its
+  ascender rather than its ink, so it also sits 1.44pt low. Both were measured
+  against the export — the two untouched captions diff to zero, so any offset in
+  the others is ours — and both are corrected on the rule (`pad_x`, `nudge_y`).
+  Without them a line the designer set as one wraps into two.
+- Spaces inside a bracket are places a line may break. «إختيار مزاد ( … )» put
+  its closing bracket on a line of its own as soon as the auction's name was
+  longer than the sample, so the brackets are bound with U+00A0; the name still
+  breaks between its own words, which is where a break belongs.
+- **Rebuilding a template writes the manifest; only `seed.py` puts it in the
+  database.** A build without a reseed leaves the API serving the previous
+  geometry, and the page renders subtly wrong — a caption wrapping where the
+  corrected box would not.
 - Some copy in the exports is converted to outlines. Redaction preserves line
   art, so it cannot be cleared — removing it takes the design with it. Flag the
   page (`needs_artwork`) and ask for a corrected export; do not widen the bake.
@@ -138,8 +170,33 @@ directory named `alembic` shadows the installed package.
   — a fitz.Rect *translation* — as list concatenation and rewrites it to a
   tuple, silently changing geometry. The rule is disabled in pyproject.toml;
   keep it that way, and run the tests after any autofix pass.
+- **No quotes around a compose `${VAR:-default}` default.** Compose is not a
+  shell: it passes them through, so `CORS_ORIGINS` reached the container as
+  `'["..."]'` and pydantic-settings aborted the boot with «error parsing value
+  for field "cors_origins"» — the API restart-loops and nothing says why. The
+  setting now parses JSON, quoted JSON and a plain comma-separated list, and
+  owns its own decoding (`NoDecode`) because the built-in reader JSON-decodes
+  before any validator runs.
 - The Alembic directory is `migrations/`. A directory named `alembic/` shadows
   the installed package and every alembic command fails to import.
+
+## The template editor
+- **A save changes what it was asked to change, and nothing else.** The field
+  set the editor sends is the field set the template ends up with, but a
+  *column* it omits keeps whatever it had. Saving used to delete every row and
+  rebuild from the payload, which made the editor responsible for round-tripping
+  every column in the table — and it was not: `preserve_aspect`, `clip` and
+  `clip_holes` have no control on that screen, so each save silently reset them
+  and every photo frame in the booklet went back to being a rectangle, with the
+  screen still showing exactly what the operator expected. `exclude_unset` is
+  what makes the guarantee hold for a column added later, rather than until
+  somebody forgets. Sending an explicit `null` still clears a value, so this is
+  not «never change».
+- **A field is the row, not its name.** A saved field is matched to its stored
+  row by `id` first — renaming keys is most of what the editor is for — and by
+  (page, key) second, which covers a client too old to send an id and an id a
+  rebuild has replaced. Row ids are stable across a save now; they used to
+  change on every one.
 
 ## API rules
 - **The web client never sends PATCH.** It has twice been refused in the
@@ -170,9 +227,28 @@ directory named `alembic` shadows the installed package.
   and everything typed on it, and prints nothing (`off: true`). A switched-off
   property leaves the summary table as well as the booklet — filter it in
   `ordered_rows` and in the page loop, or it is listed with no page to point at.
+- **A keystroke is never dropped on the way to the server.** Values are held
+  per key in a pending map until the save that carried them is acknowledged,
+  and adopted server values are laid *under* whatever is still pending. A single
+  dirty flag cannot express this: it has to be cleared when a save is sent, and
+  the answer to that save — built from the values it carried — was then adopted
+  over everything typed since. That was «اكتب كلمة تختفي»: measured, the box
+  showed «سكني» and settled back to «سك», and «سك» is what reached the database.
+  Every revision-bumping call also goes through one queue, values and lease rows
+  together, because two of our own saves in flight at once carry the same
+  revision and the server rightly refuses the second — which reloaded the
+  builder mid-sentence. Leaving a page sends what it still holds rather than
+  clearing it.
 - A booklet starts with **no** properties and grows. Nothing asks for a count up
   front; a property added from anywhere lands where properties belong
   (`_lot_anchor`), not after whatever page happened to be open.
+- The side panel is **tabbed, not stacked**. A property page offers a layout,
+  five optional pages, the photographs, the section boxes and twenty-odd
+  fields; down one column that is several screenfuls, and reaching الحقول meant
+  scrolling past all of it. The tabs a node offers depend on what it is, so the
+  open tab is held by name and falls back to the first when the new page does
+  not offer it — الحقول leads and is the default, because the page and the list
+  beside it are a pair.
 - RTL by default. Light theme only. Right-hand sidebar.
 - IBM Plex Sans Arabic for everything; IBM Plex Mono ONLY for technical values
   (filenames, page counters, row numbers, durations). Latin numerals always,

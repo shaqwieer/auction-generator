@@ -113,12 +113,14 @@ export function AuthImage({
 export function Labelled({
   label,
   children,
+  className = "",
 }: {
   label: string;
   children: ReactNode;
+  className?: string;
 }) {
   return (
-    <div>
+    <div className={className}>
       <span className="field-label">{label}</span>
       {children}
     </div>
@@ -202,6 +204,92 @@ export function Foldable({
         </span>
       </button>
       {open ? children : null}
+    </div>
+  );
+}
+
+export interface TabSpec {
+  id: string;
+  label: string;
+  /** A count, a filename, whatever tells the client what is behind the tab. */
+  meta?: ReactNode;
+  body: ReactNode;
+}
+
+/**
+ * One panel showing one section at a time, chosen from a bar across the top.
+ *
+ * The alternative — every section stacked down the side — is what the builder
+ * had, and on a property page it ran to several screenfuls: a layout choice,
+ * five optional pages, the photographs, the section boxes and then the fields,
+ * so filling in a value meant scrolling past everything that was not it. The
+ * sections are not read together and never were; they are visited one at a
+ * time. A bar puts every one of them a single click away and keeps the page
+ * itself in view while any of them is open.
+ *
+ * The tabs a node offers depend on what that node is, so the selected id can
+ * name a tab that is not on the bar any more — after switching from a property
+ * to the contact page, say. Resolving it here rather than storing an index
+ * means the caller keeps its choice when the tab survives, and falls to the
+ * first when it does not.
+ */
+export function Tabbed({
+  tabs,
+  active,
+  onSelect,
+  className = "",
+}: {
+  tabs: TabSpec[];
+  active: string;
+  onSelect: (id: string) => void;
+  className?: string;
+}) {
+  if (!tabs.length) return null;
+  const shown = tabs.find((tab) => tab.id === active) ?? tabs[0]!;
+  return (
+    <div className={`panel ${className}`}>
+      <div
+        role="tablist"
+        // Scrolls sideways rather than wrapping to a second row: a bar that
+        // grows taller as tabs are added takes back the space it saved.
+        className="tab-strip flex gap-1 overflow-x-auto overflow-y-hidden border-b border-line px-2 pt-2"
+      >
+        {tabs.map((tab) => {
+          const on = tab.id === shown.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={on}
+              onClick={() => onSelect(tab.id)}
+              className={`shrink-0 whitespace-nowrap rounded-t border-x border-t px-3 py-2 text-sm transition-colors ${
+                on
+                  ? "border-line bg-surface text-ink"
+                  : "border-transparent text-muted hover:text-ink"
+              }`}
+              // The active tab's bottom edge is the panel it belongs to, so it
+              // sits one pixel lower and covers the rule under the bar.
+              style={on ? { marginBottom: "-1px" } : undefined}
+            >
+              {tab.label}
+              {tab.meta ? (
+                <span className="mono mr-2 text-xs text-muted-soft">
+                  {tab.meta}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+      {/*
+        The body scrolls inside the panel rather than growing the page: the
+        point of the bar is that the page being filled in stays on screen, and
+        a tab tall enough to push it away gives that back.
+      */}
+      <div role="tabpanel" className="max-h-[calc(100vh-11rem)] overflow-y-auto">
+        {shown.body}
+      </div>
     </div>
   );
 }

@@ -173,6 +173,13 @@ class TemplateFieldOut(ORM):
     #: The shape the box is drawn as, where it is not a rectangle.
     clip: list[list[float]] | None = None
     clip_holes: list[list[list[float]]] | None = None
+    #: Fixed wording printed around the value, and what prints without one.
+    #: Read as well as written, per the note above: the steps page's captions
+    #: are mostly prefix, and an editor save that could not see them would
+    #: hand the client five numbered icons and no instructions.
+    prefix: str = ""
+    suffix: str = ""
+    default_value: str = ""
     origin: str
     table_spec: dict[str, Any] | None = None
 
@@ -252,8 +259,18 @@ class TemplateIngestOut(BaseModel):
 
 
 class TemplateFieldUpdate(BaseModel):
-    """One field as saved by the template editor."""
+    """One field as saved by the template editor.
 
+    Every column is optional-by-omission: what the editor does not send, the
+    save leaves alone. That is what stops a screen with no control for a clip
+    path from clearing one. Sending an explicit null still clears it, so
+    "never strip" does not become "never change".
+    """
+
+    #: Which stored row this is. A field is the row, not its name -- without
+    #: this, renaming a key would replace the row and lose every column the
+    #: editor does not send.
+    id: uuid.UUID | None = None
     key: str
     label: str = ""
     page_index: int
@@ -282,6 +299,9 @@ class TemplateFieldUpdate(BaseModel):
     preserve_aspect: bool = False
     clip: list[list[float]] | None = None
     clip_holes: list[list[list[float]]] | None = None
+    prefix: str = ""
+    suffix: str = ""
+    default_value: str = ""
     table_spec: dict[str, Any] | None = None
 
 
@@ -361,6 +381,11 @@ class PagePlanOut(BaseModel):
     fields_by_page: dict[int, list[TemplateFieldOut]]
     record_keys: list[str]
     predicted_pages: int
+    #: What the booklet knows about itself -- the auction's name, the platform's
+    #: -- resolved the same way the renderer resolves it. A field whose
+    #: default_value names one of these prints it without being typed into,
+    #: so the box beside the page shows it too rather than looking unfilled.
+    booklet: dict[str, str] = {}
 
 
 class NodeAdd(BaseModel):

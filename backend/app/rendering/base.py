@@ -115,6 +115,23 @@ class FieldSpec:
     calibration_dy: float = 0.0
     is_required: bool = False
     rtl: bool = True
+    #: Fixed wording printed around the value, so a caption can be part design
+    #: and part data. The steps page is the case: «سداد قيمة المشاركة في المزاد
+    #: (…)» is the guide's sentence and only the bracketed words change, so the
+    #: client is asked for those words and cannot mistype the rest. The whole
+    #: caption is drawn as one box, which is why it still wraps and centres the
+    #: way the designer drew it — carving out only the middle would leave the
+    #: fixed halves stranded when the value changes length.
+    #: A newline is a deliberate line break (the engine turns it into <br>), so
+    #: the caption breaks where the artwork breaks rather than where it measures.
+    prefix: str = ""
+    suffix: str = ""
+    #: What prints when nothing has been typed. {other_key} takes the value
+    #: from elsewhere in the booklet — the platform and the auction are named on
+    #: the auction-info page, and naming them again on this one would be asking
+    #: twice for one fact. Resolved at draw time, never copied, so a title
+    #: corrected on the cover corrects the steps page too.
+    default_value: str = ""
     #: Fit the image inside the box instead of filling it. A photograph is
     #: cropped to its frame, which is what a frame is for; a logo cropped to a
     #: frame is a broken logo, and one stretched to it is worse.

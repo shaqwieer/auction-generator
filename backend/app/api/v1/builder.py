@@ -25,6 +25,7 @@ from sqlalchemy import select
 from app.api.deps import DB, CurrentUser, owned_or_403
 from app.core.config import get_settings
 from app.models import Asset, DataRecord, Project
+from app.rendering.compose import booklet_facts
 from app.schemas import (
     AssetOut,
     NodeAdd,
@@ -98,6 +99,11 @@ def _plan_out(db: DB, project: Project) -> PagePlanOut:
         fields_by_page=by_page,
         record_keys=template_service.record_keys(template),
         predicted_pages=page_plan.predicted_pages(project, project.records),
+        booklet=booklet_facts(
+            dict(project.static_values or {}),
+            plan.get("nodes", []),
+            project.name,
+        ),
     )
 
 

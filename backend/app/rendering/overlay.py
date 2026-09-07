@@ -11,6 +11,8 @@ the artwork once, not twenty times.
 
 from __future__ import annotations
 
+import re
+
 import fitz
 
 from . import messages
@@ -40,6 +42,38 @@ BACKDROP_COVERAGE = 0.92
 #: Where a link leads inside the document rather than out of it. The value is
 #: the output page it jumps to, which only the composer knows.
 GOTO_PREFIX = "__goto_"
+
+#: The booklet's own facts, for a field whose ``default_value`` names one --
+#: the auction and the platform are typed on the auction-info page and belong
+#: to the whole issue, not to the page that happens to print them again. Kept
+#: under a reserved key rather than merged into the values so that nothing
+#: starts printing merely because the booklet knows it. See ``compose``.
+DEFAULTS_KEY = "__booklet__"
+
+_SLOT = re.compile(r"\{([a-z0-9_]+)\}")
+
+
+def _resolve(template: str, booklet: dict) -> str:
+    """Fill ``{key}`` from the booklet's own facts; an unknown key empties."""
+    if not template:
+        return ""
+    return _SLOT.sub(lambda m: str(booklet.get(m.group(1)) or "").strip(), template)
+
+
+def _caption(spec: FieldSpec, value: str, booklet: dict) -> str:
+    """What this field actually prints: fixed wording around a typed value.
+
+    The value falls back to ``default_value`` -- which is the point of the
+    steps page: nothing typed there still prints the guide's sentence with the
+    auction's own name in it, and typing replaces only the name.
+    """
+    inner = value or _resolve(spec.default_value, booklet)
+    if not spec.prefix and not spec.suffix:
+        return inner
+    # The fixed halves print even with nothing between them. A caption that
+    # vanished because its one variable word was blank would take the
+    # designer's sentence with it, and the page was cleared to make room for it.
+    return f"{spec.prefix}{inner}{spec.suffix}"
 
 
 def _is_backdrop(rect: fitz.Rect, page_rect: fitz.Rect) -> bool:
@@ -142,6 +176,15 @@ class PyMuPDFOverlayRenderer:
 
         raw = instance.values.get(spec.key)
         value = "" if raw is None else str(raw).strip()
+
+        if spec.type is FieldType.TEXT and (
+            spec.prefix or spec.suffix or spec.default_value
+        ):
+            booklet = instance.values.get(DEFAULTS_KEY) or {}
+            text = _caption(spec, value, booklet)
+            if text.strip():
+                self._draw_text(page, spec, rect, text, scale, row, issues)
+            return
 
         if not value:
             # A link that leads inside the document needs no address to lead to.

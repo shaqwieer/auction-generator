@@ -70,6 +70,26 @@ export function askable(fields: TemplateFieldOut[]): TemplateFieldOut[] {
   );
 }
 
+/**
+ * What a field prints when nothing has been typed into it.
+ *
+ * Shown as the box's placeholder, so a field that is already filling itself in
+ * does not read as empty. `{key}` names one of the booklet's own facts — the
+ * auction is named once, on the auction-info page, and the steps page prints
+ * that name rather than asking for it again. Which value wins is the server's
+ * rule, resolved in `plan.booklet`; all that happens here is the substitution.
+ */
+export function resolvedDefault(
+  field: TemplateFieldOut,
+  booklet: Record<string, string>,
+): string {
+  if (!field.default_value) return "";
+  return field.default_value.replace(
+    /\{([a-z0-9_]+)\}/g,
+    (_, key: string) => booklet[key] ?? "",
+  );
+}
+
 export function photoFields(fields: TemplateFieldOut[]): TemplateFieldOut[] {
   return fields.filter((field) => field.type === "image");
 }
@@ -160,12 +180,14 @@ export function FieldList({
   onChange,
   focused,
   onFocusField,
+  booklet = {},
 }: {
   fields: TemplateFieldOut[];
   values: Record<string, string>;
   onChange: (key: string, value: string) => void;
   focused: string | null;
   onFocusField: (key: string | null) => void;
+  booklet?: Record<string, string>;
 }) {
   const editable = askable(fields);
   if (!editable.length) {
@@ -176,9 +198,18 @@ export function FieldList({
     );
   }
   return (
-    <div className="grid gap-3 p-5">
+    // Two columns where there is room. A property page asks for twenty-two
+    // values, and in one column that is a screen and a half of scrolling to
+    // reach the last of them — the short ones (a deed number, an area, a
+    // boundary) sit side by side without crowding.
+    <div className="grid gap-3 p-5 [@media(min-width:1600px)]:grid-cols-2">
       {editable.map((field) => (
-        <Labelled key={field.id} label={field.label || field.key}>
+        <Labelled
+          key={field.id}
+          label={field.label || field.key}
+          // A paragraph does not belong in half a column; the short values do.
+          className={field.fit === "wrap" ? "[@media(min-width:1600px)]:col-span-2" : ""}
+        >
           {field.type === "link" ? (
             <input
               value={values[field.key] ?? ""}
@@ -194,6 +225,7 @@ export function FieldList({
             <textarea
               rows={3}
               value={values[field.key] ?? ""}
+              placeholder={resolvedDefault(field, booklet)}
               onFocus={() => onFocusField(field.key)}
               onBlur={() => onFocusField(null)}
               onChange={(event) => onChange(field.key, event.target.value)}
@@ -202,6 +234,7 @@ export function FieldList({
           ) : (
             <input
               value={values[field.key] ?? ""}
+              placeholder={resolvedDefault(field, booklet)}
               onFocus={() => onFocusField(field.key)}
               onBlur={() => onFocusField(null)}
               onChange={(event) => onChange(field.key, event.target.value)}
