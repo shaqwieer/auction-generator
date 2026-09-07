@@ -1,0 +1,77 @@
+name: matbaa
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: matbaa
+      POSTGRES_PASSWORD: matbaa
+      POSTGRES_DB: matbaa
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U matbaa -d matbaa"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      # Published only so a developer can attach psql. Overridable because a
+      # machine that already runs Postgres would otherwise fail to start.
+      - "${DB_PORT:-55432}:5432"
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://matbaa:matbaa@db:5432/matbaa
+      # Inside the container the mount is always at /app/var, whatever the host
+      # path behind it happens to be.
+      VAR_ROOT: /app/var
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-production}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      # What a printed QR code resolves through. A code outlives the booklet,
+      # so this is a deployment setting and never the request's own host.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-'["http://localhost:3000", "http://127.0.0.1:3000"]'}
+      WORKER_COUNT: 3
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # A bind mount, never a named volume. Everything the application writes
+      # lives here -- template artwork, uploaded spreadsheets, the client's
+      # photographs, the finished booklets -- and it has to outlive a rebuild,
+      # a restart and a `docker compose down`. A bind mount also means an
+      # operator can back it up, inspect it and restore it with ordinary tools,
+      # and that no deployment ever needs `docker compose cp`.
+      #
+      # Development (Windows): the default is the repo's own backend/var, so a
+      # template built on the host is immediately visible in the container.
+      # Production (Linux VPS): set MATBAA_VAR=/srv/matbaa/var in .env.
+      - ${MATBAA_VAR:-./backend/var}:/app/var
+    ports:
+      - "${API_PORT:-8000}:8000"
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        # Next inlines NEXT_PUBLIC_* at build time, so this has to reach the
+        # build as well as the runtime -- set at runtime alone, the client
+        # bundle keeps the localhost default and every call from the browser
+        # goes to the wrong host.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    environment:
+      # Browser-side calls go to the host-published API port.
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+
+volumes:
+  # The database keeps a named volume: it is Postgres's own on-disk format and
+  # nothing outside the container should be reading or writing it. Files are
+  # the opposite case -- see the api service's bind mount.
+  db_data:

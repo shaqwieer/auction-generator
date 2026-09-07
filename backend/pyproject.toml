@@ -1,0 +1,37 @@
+[tool.ruff]
+line-length = 90
+target-version = "py311"
+exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import order
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "SIM",      # simplify
+    "RUF",
+]
+ignore = [
+    # FastAPI's dependency idiom is a call in a default argument.
+    "B008",
+    # Long Arabic strings in user-facing messages do not wrap usefully.
+    "E501",
+    # Arabic text legitimately contains characters ruff calls "ambiguous"
+    # (Arabic comma, Arabic-Indic digits, the tatweel).
+    "RUF001", "RUF002", "RUF003",
+    # fitz.Rect overloads `+` as a translation. RUF005 reads `rect + (dx, dy,
+    # dx, dy)` as list concatenation and "fixes" it into a tuple, which changes
+    # the geometry silently. Never enable this rule in this codebase.
+    "RUF005",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Scripts add the backend root to sys.path before importing the app package.
+"scripts/*" = ["E402"]
+"migrations/env.py" = ["E402"]
+"tests/*" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "tests"]

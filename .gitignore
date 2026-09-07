@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Backend runtime state: generated backgrounds, uploads and outputs.
+backend/var/
+
+# Node
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+
+# Client source artwork — 240MB of .ai/.pdf, kept out of the repo. The whole
+# references/ tree goes with it: the screenshots in there are the designer's
+# pages, not build inputs, and the repo is public.
+references/
+*.ai
+*.pdf
+*.zip
+أغلفة الكتيف/
+خطوط إنفاذ/
+
+# The brand fonts the app ships with are the exception: they are required at
+# runtime and must be committed.
+!backend/app/assets/fonts/*.otf
+!backend/app/assets/fonts/*.ttf
+
+.DS_Store
+Thumbs.db

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+# var/ is mounted at run time, never copied in. Baking the template artwork
+# into the image costs hundreds of megabytes and the mount hides it anyway.
+var/
+tests/
