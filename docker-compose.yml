@@ -3,6 +3,7 @@ name: matbaa
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: matbaa
       POSTGRES_PASSWORD: matbaa
@@ -20,6 +21,7 @@ services:
       - "${DB_PORT:-55432}:5432"
 
   api:
+    restart: unless-stopped
     build:
       context: ./backend
     environment:
@@ -53,6 +55,7 @@ services:
       - "${API_PORT:-8000}:8000"
 
   web:
+    restart: unless-stopped
     build:
       context: ./frontend
       args:
