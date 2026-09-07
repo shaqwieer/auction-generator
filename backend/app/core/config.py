@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -79,10 +81,38 @@ class Settings(BaseSettings):
 
     # localhost and 127.0.0.1 are distinct origins to the browser, and a
     # developer may reach the dev server by either name.
-    cors_origins: list[str] = [
+    # NoDecode because the validator below, not pydantic-settings, reads
+    # this one: the built-in reader JSON-decodes a list field before any
+    # validator runs, and that is the step that used to abort the boot.
+    cors_origins: Annotated[list[str], NoDecode] = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _origins(cls, value: object) -> object:
+        """Accept the shapes a deployment actually writes, not only JSON.
+
+        pydantic-settings parses a list field from the environment as JSON, and
+        anything else is a startup crash with no usable message -- «error
+        parsing value for field "cors_origins"» and the API restart-loops. That
+        is a hard way to learn that a compose default carried its own quotes
+        ('["..."]'), which is not shell quoting and is passed through verbatim.
+
+        So: strip a wrapping pair of quotes, and take a plain comma-separated
+        list too, which is what anyone writing this by hand reaches for first.
+        """
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        for quote in ("'", '"'):
+            if len(text) > 1 and text.startswith(quote) and text.endswith(quote):
+                text = text[1:-1].strip()
+                break
+        if text.startswith("["):
+            return json.loads(text)
+        return [part.strip() for part in text.split(",") if part.strip()]
 
     @property
     def sync_database_url(self) -> str:
