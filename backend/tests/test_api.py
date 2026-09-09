@@ -367,6 +367,67 @@ def test_reimporting_a_template_keeps_existing_projects(client, project):
         session.close()
 
 
+def test_a_reimported_template_counts_what_it_imported(client, project, tmp_path):
+    """The returned template must answer for the design it just loaded.
+
+    Read before the commit, it used to answer for the one it replaced: the rows
+    are added by foreign key and never appended to the collections the delete
+    loop had already loaded, so `fields` still held the previous design. The
+    seed prints these counts as its report of what it wrote, and it spent a
+    deploy reporting 138 fields for a template that had just been given 135 --
+    the number the design had before. A count that is only true after a commit
+    is not a count anyone should print.
+
+    The revision has to actually change the count, which is why this imports a
+    trimmed manifest rather than the same one twice: re-importing an unchanged
+    design reads the same number whether the collection is stale or not, and
+    that is exactly why the deploy was the first place this showed.
+    """
+    import json
+
+    from sqlalchemy import select
+
+    from app.core.db import SessionLocal
+    from app.models import Template
+    from app.services.templates import import_template
+
+    template_dir = BACKEND / "var" / "templates" / TEMPLATE_SLUG
+    manifest = json.loads((template_dir / "template.json").read_text(encoding="utf-8"))
+
+    revised = dict(manifest)
+    revised["fields"] = manifest["fields"][:-3]
+    revised["pages"] = manifest.get("pages", [])[:-1]
+    assert len(revised["fields"]) != len(manifest["fields"])
+
+    revised_dir = tmp_path / TEMPLATE_SLUG
+    revised_dir.mkdir()
+    (revised_dir / "template.json").write_text(
+        json.dumps(revised, ensure_ascii=False), encoding="utf-8"
+    )
+
+    session = SessionLocal()
+    try:
+        before = session.scalar(
+            select(Template).where(Template.slug == TEMPLATE_SLUG)
+        )
+        # Load the collections, which is what the delete loop does -- without
+        # this the bug hides behind a lazy load that happens to run late.
+        assert len(before.fields) == len(manifest["fields"])
+
+        again = import_template(session, revised_dir, name="كتيّب المزاد")
+
+        # No commit: this is the read the seed does.
+        assert len(again.fields) == len(revised["fields"])
+        assert len(again.pages) == len(revised["pages"])
+        assert len(again.sections) == len(revised["sections"])
+    finally:
+        # Rolled back, never committed: this template is the one every other
+        # test renders from, and it must keep its real design and its own
+        # background path.
+        session.rollback()
+        session.close()
+
+
 def test_staff_must_name_the_client_when_creating_a_project(client):
     """Staff act for any client, so the wizard has to say which one."""
     from sqlalchemy import select

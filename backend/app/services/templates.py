@@ -179,6 +179,15 @@ def import_template(
         )
 
     session.flush()
+    # Every row above was added by foreign key rather than appended to the
+    # collection, and the collections themselves were loaded -- and emptied --
+    # by the delete loop at the top. So `template.fields` still holds the rows
+    # this import just replaced, and a caller reading it before committing is
+    # told the count it had before rather than the one it has now: the seed
+    # reported a re-import of 135 fields as 138, which is what the previous
+    # design had. Expiring them makes the returned template answer from the
+    # database, which is the only answer worth printing.
+    session.expire(template, ["sections", "fields", "pages"])
     return template
 
 
