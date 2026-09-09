@@ -5,11 +5,17 @@ from __future__ import annotations
 import io
 import os
 import sys
+import unicodedata
 from pathlib import Path
 
 import fitz
 import pytest
 from openpyxl import Workbook
+
+from scripts.pagemaps.auction_infath import (
+    HYBRID_EXPORT,
+    IN_PERSON_EXPORT,
+)
 
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
@@ -18,17 +24,36 @@ PROJECT = BACKEND.parent
 fitz.TOOLS.mupdf_display_errors(False)
 
 
-def _find_sample(pages: int) -> Path | None:
-    """Locate a designer export by page count.
+#: Marks an export's filename may carry that nobody means to type.
+_NOISE = dict.fromkeys(
+    [0xFEFF, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x0640]
+)
+
+
+def _plain(text: str) -> str:
+    return unicodedata.normalize("NFKC", text).translate(_NOISE).strip()
+
+
+def _find_sample(pages: int, name: str = "") -> Path | None:
+    """Locate a designer export by name, confirmed by page count.
 
     The exports live under ``references/`` with Arabic filenames that no longer
-    survive a round trip through the filesystem intact, so they are found by
-    shape rather than by name. The project root is searched second only because
-    an export once sat there; every test that skips because nothing matched is a
-    test that silently stopped running, so keep both roots.
+    survive a round trip through the filesystem intact, so the match is a
+    substring with the stray marks folded away rather than an exact name. The
+    project root is searched second only because an export once sat there; every
+    test that skips because nothing matched is a test that silently stopped
+    running, so keep both roots.
+
+    Counting is no longer enough on its own: the electronic booklet is also
+    sixteen pages, and asking for "the sixteen-page export" returned it instead
+    of the حضوري one — eleven tests then ran against artwork they were not
+    written for.
     """
+    wanted = _plain(name)
     for root in (PROJECT / "references", PROJECT):
         for candidate in sorted(root.glob("*.pdf")):
+            if wanted and wanted not in _plain(candidate.stem):
+                continue
             try:
                 with fitz.open(candidate) as doc:
                     if doc.page_count == pages:
@@ -41,7 +66,7 @@ def _find_sample(pages: int) -> Path | None:
 
 @pytest.fixture(scope="session")
 def sample_path() -> Path:
-    path = _find_sample(16)
+    path = _find_sample(16, IN_PERSON_EXPORT)
     if path is None:
         pytest.skip("in-person auction booklet export not available")
     return path
@@ -50,7 +75,7 @@ def sample_path() -> Path:
 @pytest.fixture(scope="session")
 def hybrid_path() -> Path:
     """The hybrid export -- the superset carrying both lot flavours."""
-    path = _find_sample(21)
+    path = _find_sample(21, HYBRID_EXPORT)
     if path is None:
         pytest.skip("hybrid auction booklet export not available")
     return path

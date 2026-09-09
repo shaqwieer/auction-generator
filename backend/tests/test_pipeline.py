@@ -212,6 +212,48 @@ def test_summary_table_paginates():
     assert [p.values["__row_offset__"] for p in table_pages] == [0, 8, 16]
 
 
+def test_a_property_with_more_leases_than_one_page_gets_another():
+    """«فيتم تكرار الصفحة», for contracts as much as for properties.
+
+    A lease page holds nineteen. The twentieth contract does not vanish and is
+    not squeezed in: the page repeats, the same artwork again, and the numbering
+    carries on across it. Before this the render stopped at nineteen and warned,
+    so an asset with more leases than that could not be printed at all.
+    """
+    from app.rendering.compose import compose_plan_indexed, page_count_plan
+
+    nodes = [{
+        "id": "lot0", "kind": "lot", "row": 0, "pages": [5, 11],
+        "layout": "standard", "options": ["rent_table"],
+        "values": {"__lease__": [{"lease_unit_number": str(i + 1)} for i in range(25)]},
+    }]
+    caps = {11: 19}
+    pages = [p for _, p in compose_plan_indexed(nodes, {0: {"deed_number": "X"}},
+                                                lease_pages=caps)]
+    leases = [p for p in pages if p.template_page_index == 11]
+    assert len(leases) == 2, "twenty-five contracts need two pages"
+    assert [len(p.values["__rows__"]) for p in leases] == [19, 6]
+    assert [p.values["__row_offset__"] for p in leases] == [0, 19]
+    # The property's own page is still drawn once.
+    assert sum(1 for p in pages if p.template_page_index == 5) == 1
+    # And the review step counts what the booklet actually prints.
+    assert page_count_plan(nodes, {0}, caps) == len(pages)
+
+
+def test_a_lease_page_is_drawn_even_with_no_contracts_on_it():
+    """Switching the page on is how the operator gets somewhere to type."""
+    from app.rendering.compose import compose_plan_indexed
+
+    nodes = [{
+        "id": "lot0", "kind": "lot", "row": 0, "pages": [11],
+        "layout": "standard", "options": ["rent_table"], "values": {},
+    }]
+    pages = [p for _, p in compose_plan_indexed(nodes, {0: {"deed_number": "X"}},
+                                                lease_pages={11: 19})]
+    assert len(pages) == 1
+    assert pages[0].values["__rows__"] == []
+
+
 def test_static_values_reach_every_page_and_records_win():
     records = [{"deed_number": "X", "auction_title": "من السجل"}]
     pages = compose(

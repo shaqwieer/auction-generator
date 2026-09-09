@@ -36,6 +36,7 @@ import argparse
 import dataclasses
 import json
 import sys
+import unicodedata
 from collections import defaultdict
 from copy import deepcopy
 from itertools import pairwise
@@ -51,9 +52,12 @@ from app.rendering.bake import bake_document
 from app.rendering.base import (
     FieldSpec,
     FieldType,
+    FrameItem,
+    FramePath,
     NormRect,
     SectionKind,
     TableColumn,
+    TableFrame,
     TableSpec,
 )
 from app.rendering.compose import Section
@@ -68,7 +72,7 @@ from app.rendering.pagemap import (
 )
 from app.rendering.shaping import Align, Fit, VAlign, calibrated_htmlbox
 from app.rendering.tables import derive_tables, to_norm
-from scripts.pagemaps.auction_infath import MAPS
+from scripts.pagemaps.auction_infath import IN_PERSON_EXPORT, MAPS
 
 BACKEND = Path(__file__).resolve().parent.parent
 REFERENCES = BACKEND.parent / "references"
@@ -94,6 +98,12 @@ STATIC_HEADINGS = {
     "مميزات العقار",
     "للتواصل والاستفسار",
     "يقام المزاد",
+    # The electronic export's wording of the same heading. It is true of every
+    # electronic auction, so nobody edits it and it is not a field -- but it is
+    # navy, the same navy as the telephone number below it, and left claimable
+    # it was taken as the first run of that colour: the heading was cleared and
+    # a phone number drawn where it had been.
+    "يقام المزاد إلكترونيا",
     "خطوات المشاركة",
     "شروط الدخول بالمزاد",
     # The white captions on the lot pages' link chips. They read like values
@@ -122,6 +132,20 @@ def _is_heading(f: DerivedField) -> bool:
     return normalise(f.sample_text) in STATIC_HEADINGS
 
 
+def _colour_matches(colour: str, match: Any) -> bool:
+    """Whether a run's colour is the one a rule is looking for.
+
+    Usually one colour. A rule may name several, because a line the designer
+    set as one thing is not always one colour in the file: the electronic
+    export's auction name is #13375C on its first line and #1F2243 on its
+    second. Matching one of them took half the title and left «أصالة حفر البا»
+    printed on the page behind whatever the client typed.
+    """
+    if isinstance(match, tuple | list | set | frozenset):
+        return colour in match
+    return colour == match
+
+
 # --------------------------------------------------------------- rule sets
 
 # Each entry names what on a page is data. ``match`` is either "image", "box"
@@ -134,8 +158,14 @@ RULES: dict[str, list[dict[str, Any]]] = {
         # either and a booklet using one is unaffected.
         {"key": "cover_photo", "label": "صورة الغلاف", "match": "image",
          "required": True},
+        # The booklet is named once and printed wherever the design names it.
+        # The cover and معلومات المزاد both carry this key, and asking for it on
+        # each was asking twice for one fact -- and letting the two disagree.
+        # Whichever is left empty prints what the other was given; untouched,
+        # both fall back to the name the project was created with, because a
+        # cover with no title on it is worse than a working one.
         {"key": "auction_title", "label": "اسم المزاد", "match": "#FFFFFF",
-         "index": 0, "fit": Fit.WRAP},
+         "index": 0, "fit": Fit.WRAP, "default_value": "{auction_title}"},
         # The date only, never the caption above it. On four of the six covers
         # the designer set «تاريخ المزاد» as the first line of this same white
         # run, so a field taking the run whole took the caption with it -- and
@@ -172,8 +202,10 @@ RULES: dict[str, list[dict[str, Any]]] = {
         ], "size": 10.2, "grow": True, "align": Align.RIGHT, "rtl": False},
     ],
     "auction_info": [
+        # The other half of the pair the cover opens; see the note there.
         {"key": "auction_title", "label": "اسم المزاد", "match": "#11375C",
-         "merge": True, "cluster": 0, "fit": Fit.WRAP},
+         "merge": True, "cluster": 0, "fit": Fit.WRAP,
+         "default_value": "{auction_title}"},
         {"key": "announcement", "label": "نص الإعلان", "match": "#000000",
          "merge": True, "cluster": 0, "fit": Fit.WRAP},
         # Three chips in the in-person wording, four where a platform is named.
@@ -189,6 +221,29 @@ RULES: dict[str, list[dict[str, Any]]] = {
             ("auction_time", "وقت المزاد"),
             ("auction_date", "تاريخ المزاد"),
             ("location", "الموقع"),
+            ("platform_name", "اسم المنصة"),
+        ]},
+    ],
+    # The same page from the electronic booklet's own export, which is a
+    # finished auction rather than a blank template and a later revision of the
+    # design: its navy is #13375C where the hybrid's is #11375C, its body is set
+    # in rich black rather than flat, its teal is #01A4A2, and the type is a few
+    # points larger throughout. Matching on the hybrid's palette found nothing
+    # on it, so the page kept the real sale's data printed into the background.
+    #
+    # Three chips, and the third is the platform. This is the whole point of the
+    # variant: an electronic auction is held nowhere, so «الموقع» is not one of
+    # its facts and the guide's card does not draw it.
+    "auction_info_electronic": [
+        {"key": "auction_title", "label": "اسم المزاد",
+         "match": ("#13375C", "#1F2243"),
+         "merge": True, "cluster": 0, "fit": Fit.WRAP,
+         "default_value": "{auction_title}"},
+        {"key": "announcement", "label": "نص الإعلان", "match": "#231F20",
+         "merge": True, "cluster": 0, "fit": Fit.WRAP},
+        {"match": "#01A4A2", "align": Align.RIGHT, "each": [
+            ("auction_time", "وقت المزاد"),
+            ("auction_date", "تاريخ المزاد"),
             ("platform_name", "اسم المنصة"),
         ]},
     ],
@@ -291,8 +346,54 @@ RULES: dict[str, list[dict[str, Any]]] = {
     "contact": [
         # One MuPDF block holds every chip on this page, so it is split back
         # into its columns by the gaps the designer left between them.
+        #
+        # Four chips, and the page that draws four is the one this list belongs
+        # to. A page drawing three is *not* these four minus the last -- see
+        # ``contact_inperson``.
         {"match": CHIP_ALT, "columns": [
             ("platform_name", "اسم المنصة"),
+            ("location", "الموقع"),
+            ("auction_date", "تاريخ المزاد"),
+            ("auction_time", "وقت المزاد"),
+        ], "size": 10.4},
+        {"match": CHIP_ALT, "columns": [
+            ("contact_phone", "رقم التواصل"),
+            ("contact_whatsapp", "واتساب"),
+        ], "size": 14.6},
+    ],
+    # The same page in the حضوري export, which draws three chips rather than
+    # four: there is no platform to name, so the row is الموقع، التاريخ، الوقت.
+    #
+    # It cannot share the four-chip list. The splitter hands out keys in order,
+    # so three columns took the *first three* of them -- and every chip was
+    # labelled with its neighbour's name. The client was asked for «اسم المنصة»
+    # on a booklet with no platform, typed the venue into it, and «وقت المزاد»
+    # was never asked for at all: the clock chip on the page was printing the
+    # date. Guide, معلومات التواصل / حضوري.
+    # The same page from the electronic export, which sets it differently: the
+    # days on the right, the platform in the middle, and the hours on the left
+    # as two lines — «يبدأ المزاد الساعة…» over «وينتهي من…». Four runs, three
+    # facts, and no venue, which is the guide's electronic card.
+    #
+    # The hours are two runs and stay two fields rather than being merged into
+    # one box: they are two printed lines with a line's worth of space between
+    # them, and a single box would have to invent where the break goes.
+    "contact_electronic": [
+        {"match": "#00A3A1", "align": Align.RIGHT, "each": [
+            ("platform_name", "اسم المنصة"),
+            ("auction_time", "بداية المزاد"),
+            ("auction_date", "أيام المزاد"),
+            ("auction_time_end", "نهاية المزاد"),
+        ]},
+        # The only navy run left once the two headings are spoken for. Both of
+        # them are in STATIC_HEADINGS, so the pool is the number alone; before
+        # «يقام المزاد إلكترونيا» was listed there it was index 0, and a
+        # printed heading was cleared to draw a telephone number over it.
+        {"key": "contact_phone", "label": "رقم التواصل", "match": "#13375A",
+         "index": 0, "align": Align.CENTER},
+    ],
+    "contact_inperson": [
+        {"match": CHIP_ALT, "columns": [
             ("location", "الموقع"),
             ("auction_date", "تاريخ المزاد"),
             ("auction_time", "وقت المزاد"),
@@ -1012,7 +1113,9 @@ def _apply_rules(
         pool = [
             f
             for f in candidates
-            if f.type is FieldType.TEXT and f.color == match and not _is_heading(f)
+            if f.type is FieldType.TEXT
+            and _colour_matches(f.color, match)
+            and not _is_heading(f)
         ]
         if not pool:
             continue
@@ -1051,6 +1154,7 @@ def _apply_rules(
             spec.valign = VAlign.TOP
             spec.line_height = 1.4
             spec.label = rule.get("label", "")
+            spec.default_value = rule.get("default_value", "")
             spec.origin = f"rule:{rule['key']}/colour={match}/cluster={which}"
             specs.append(spec)
             continue
@@ -1058,7 +1162,11 @@ def _apply_rules(
         index = rule.get("index", 0)
         if index >= len(pool):
             continue
-        extras = {k: v for k, v in rule.items() if k in {"align", "fit", "valign"}}
+        extras = {
+            k: v
+            for k, v in rule.items()
+            if k in {"align", "fit", "valign", "default_value"}
+        }
         spec = _spec_from(
             pool[index], page_rect, rule["key"],
             siblings=candidates,
@@ -1707,7 +1815,31 @@ def _recurring(shapes: list[list[int]]) -> list[bool]:
     ]
 
 
-def _rebrand(doc: fitz.Document, page_rect: fitz.Rect) -> list[FieldSpec]:
+def agent_silhouettes(doc: fitz.Document) -> list[list[int]]:
+    """The shapes that recur across a whole export: its selling agent's mark.
+
+    Read from the export itself rather than from the pages a template keeps, so
+    that a page grafted out of it can still be told what its own lockup looks
+    like.
+    """
+    candidates = [
+        (index, box)
+        for index in range(doc.page_count)
+        for box, _ in _brand_marks(doc[index])
+    ]
+    if not candidates:
+        return []
+    shapes = [_silhouette(doc[i], box) for i, box in candidates]
+    return [s for s, yes in zip(shapes, _recurring(shapes), strict=True) if yes]
+
+
+def _rebrand(
+    doc: fitz.Document,
+    page_rect: fitz.Rect,
+    page_source: list[str] | None = None,
+    known_marks: dict[str, list[list[int]]] | None = None,
+    bands: dict[int, tuple[tuple[float, float, float, float], ...]] | None = None,
+) -> list[FieldSpec]:
     """Take the agent's fixed branding off every page and make it a field.
 
     The booklet is printed for whichever company is selling, so a mark belonging
@@ -1717,16 +1849,104 @@ def _rebrand(doc: fitz.Document, page_rect: fitz.Rect) -> list[FieldSpec]:
     becomes two fields at the same rect. There is no fallback to the old mark:
     a company with no logo prints its name, and a booklet with neither prints
     nothing there.
+
+    ``page_source`` names the export each page came from, and the mark is looked
+    for *within* each export rather than across the booklet. A template cut from
+    one file does not notice the difference. One that grafts a few pages from
+    another does: those pages carry a different agent's lockup, three of them
+    against seventeen, and «the shape that recurs» is a test three pages cannot
+    pass. Judged against its own export — where it is on every page — it is
+    plainly the mark, and comes off like any other.
     """
+    stated = bands or {}
     candidates: list[tuple[int, fitz.Rect, str]] = []
     for index in range(doc.page_count):
+        if index in stated:
+            # Declared pages are not searched: whatever is in the stated region
+            # is the mark, and the automatic test has already been established
+            # not to find it.
+            continue
         for box, colour in _brand_marks(doc[index]):
             candidates.append((index, box, colour))
-    if not candidates:
+
+    declared: list[tuple[int, fitz.Rect, str]] = []
+    for index, regions in stated.items():
+        page = doc[index]
+        for band in regions:
+            region = fitz.Rect(
+                band[0] * page_rect.width,
+                band[1] * page_rect.height,
+                band[2] * page_rect.width,
+                band[3] * page_rect.height,
+            )
+            ink = fitz.Rect()
+            for drawing in page.get_drawings():
+                box = drawing["rect"]
+                if box.is_empty:
+                    continue
+                # Mostly inside, not wholly inside. A path's reported extent
+                # shifts by a few points between the export and the composed
+                # document -- one letter of the wordmark reads x0=202.5 in the
+                # file and 198.2 once placed -- so demanding containment left
+                # it a fraction outside the region, out of the union, and
+                # printed on the page as a grey speck. Requiring most of the
+                # box instead still excludes anything that merely passes
+                # through, such as a full-width rule sharing the footer.
+                caught = box & region
+                if caught.is_empty or caught.get_area() < box.get_area() * 0.6:
+                    continue
+                # ``Rect.__or__`` ignores an empty rect, so the extent is grown
+                # by hand rather than unioned from nothing.
+                ink = box if ink.is_empty else ink | box
+            if ink.is_empty:
+                raise MapError(
+                    f"page {index}: nothing drawn inside the stated agent-mark "
+                    f"region {tuple(round(v, 4) for v in band)} — the export "
+                    f"has changed and the region has to be measured again"
+                )
+            # Erased by the region, placed by the ink.
+            #
+            # Redaction removes a path only when the rect covers it outright,
+            # and it judges that against its own idea of the path's bounds,
+            # which is not always the one ``get_drawings`` reports -- a letter
+            # of the wordmark reported 4pt narrower than it was redacted as, so
+            # the union built from those bounds did not quite cover it and it
+            # survived as a grey speck. The region is declared, measured, and
+            # contains nothing but the mark, so it is safe to clear whole. The
+            # field still goes where the mark actually was.
+            _erase_blocks(page, [region])
+            declared.append((index, ink, ""))
+
+    if not candidates and not declared:
         return []
 
-    keep = _recurring([_silhouette(doc[i], box) for i, box, _ in candidates])
-    marks = [c for c, yes in zip(candidates, keep, strict=True) if yes]
+    sources = page_source or [""] * doc.page_count
+    known = known_marks or {}
+    keep = [False] * len(candidates)
+    for origin in {sources[i] if i < len(sources) else "" for i, _, _ in candidates}:
+        group = [
+            n
+            for n, (i, _, _) in enumerate(candidates)
+            if (sources[i] if i < len(sources) else "") == origin
+        ]
+        shapes = [_silhouette(doc[candidates[n][0]], candidates[n][1]) for n in group]
+        if origin in known:
+            # A grafted page is a handful out of a booklet, and «recurs» is a
+            # test a handful cannot pass however plainly the mark is a mark. Its
+            # own export settles it instead: the shape is looked up there, where
+            # it is on every page, and matched here.
+            verdicts = [
+                any(
+                    _shape_distance(shape, seen) < BRAND_SAME_SHAPE
+                    for seen in known[origin]
+                )
+                for shape in shapes
+            ]
+        else:
+            verdicts = _recurring(shapes)
+        for n, yes in zip(group, verdicts, strict=True):
+            keep[n] = yes
+    marks = [c for c, yes in zip(candidates, keep, strict=True) if yes] + declared
 
     # Padded, because "covered" is judged strictly: the hamza of the wordmark
     # begins on the extent's own top edge, so it was left behind as a speck in
@@ -2146,6 +2366,15 @@ def _uniform_table(
 
     body = column_rects[0] | column_rects[-1]
     body.y1 = top + height + pitch * (len(numbers) - 1)
+    # «بيان عقود الإيجار» shrinks to its leases the same way «بيان العقارات»
+    # shrinks to its properties. It reaches this function rather than the
+    # derived path only because its column headers are outlined, which changes
+    # how the block is *found*, not what it is: nineteen ruled rows, eight
+    # dividers and a numbered tab, all of it the designer's line art and all of
+    # it lifted onto the field so the block can end at the last lease.
+    frame = _lift_frame(
+        page, page_rect, body, pitch=pitch, rows=len(numbers)
+    )
     spec = FieldSpec(
         key=f"__table__{page.number}_0",
         page_index=page.number,
@@ -2158,6 +2387,7 @@ def _uniform_table(
             rows=len(numbers),
             row_pitch=pitch / page_rect.height,
             row_offset=0,
+            frame=frame,
         ),
     )
 
@@ -2206,30 +2436,40 @@ def _block_extents(page: fitz.Page, blocks: list, page_rect: fitz.Rect) -> list[
     anything. The band around each block is taken from its own row pitch
     instead, which the artwork gives exactly.
     """
-    drawings: list[fitz.Rect] = []
-    for drawing in page.get_drawings():
-        rect = fitz.Rect(drawing["rect"])
-        rect.normalize()
-        if rect.get_area() > page_rect.get_area() * BACKDROP_AREA:
-            continue
-        drawings.append(rect)
-
     extents: list[fitz.Rect] = []
     for block in blocks:
         body = fitz.Rect(block.first_row_pt)
         for row in range(block.rows):
             body |= block.row_rect(row)
-        ceiling = body.y0 - block.row_pitch * BLOCK_HEAD_PITCHES
-        floor = body.y1 + block.row_pitch * BLOCK_FOOT_PITCHES
-        box = fitz.Rect(body)
-        for rect in drawings:
-            if rect.y0 < ceiling or rect.y1 > floor:
-                continue
-            if rect.x1 < body.x0 - 2 or rect.x0 > body.x1 + 2:
-                continue
-            box |= rect
-        extents.append(box)
+        extents.append(_extent_around(page, body, block.row_pitch, page_rect))
     return extents
+
+
+def _extent_around(
+    page: fitz.Page, body: fitz.Rect, pitch: float, page_rect: fitz.Rect
+) -> fitz.Rect:
+    """Everything the designer drew around one block of rows.
+
+    Split out of ``_block_extents`` because «بيان عقود الإيجار» needs one too
+    and has no derived block to ask: its column headers are outlined, so
+    ``derive_tables`` never sees it and the build measures it from its printed
+    row numbers instead. The band is the same either way -- two pitches above
+    the first row for the header bar, one below the last for the numbered tab.
+    """
+    ceiling = body.y0 - pitch * BLOCK_HEAD_PITCHES
+    floor = body.y1 + pitch * BLOCK_FOOT_PITCHES
+    box = fitz.Rect(body)
+    for drawing in page.get_drawings():
+        rect = fitz.Rect(drawing["rect"])
+        rect.normalize()
+        if rect.get_area() > page_rect.get_area() * BACKDROP_AREA:
+            continue
+        if rect.y0 < ceiling or rect.y1 > floor:
+            continue
+        if rect.x1 < body.x0 - 2 or rect.x0 > body.x1 + 2:
+            continue
+        box |= rect
+    return box
 
 
 #: The two colours the summary table is drawn in, sampled from the fill behind
@@ -2300,10 +2540,18 @@ def _navy_colourway(page_rect: fitz.Rect) -> tuple[fitz.Document, fitz.Rect] | N
     export that has it. Same page size, same nine columns at the same x, same
     brand: it is the designer's block either way.
 
-    Its sample rows are cleared here, before it is placed, because placing a page
-    embeds it as a form and redaction can no longer reach inside.
+    Its sample rows are cleared here, before it is placed. Not because they
+    could not be reached afterwards -- redaction does reach into a placed form,
+    which is how ``_erase_frame`` takes the ruling off this very page -- but
+    because clearing them at the source is one pass over a page whose
+    coordinates are its own, rather than a second pass over a form's.
+
+    Named, not counted. The electronic booklet is also sixteen pages, and asking
+    for "the sixteen-page export" fetched it instead — it draws the teal block
+    alone, so the pair silently became a single page and بيان العقارات lost the
+    slot that makes the two colourways a choice.
     """
-    source = _find_source(16)
+    source = _find_source(16, IN_PERSON_EXPORT)
     if source is None:
         return None
     with fitz.open(source) as export:
@@ -2327,6 +2575,315 @@ def _navy_colourway(page_rect: fitz.Rect) -> tuple[fitz.Document, fitz.Rect] | N
         graphics=fitz.PDF_REDACT_LINE_ART_NONE,
     )
     return scratch, extent
+
+
+#: A drawn shape flatter than this is one of the rules closing a row, not a
+#: divider running down the block. The rules are hairlines a fraction of a point
+#: thick and the shortest divider is two hundred and sixty points tall, so
+#: nothing sits anywhere near the boundary.
+RULE_MAX_HEIGHT = 1.0
+
+
+def _ink(colour: Any) -> list[float] | None:
+    """A drawing's colour as the PDF states it, or ``None`` for no colour.
+
+    Kept in the file's own components rather than folded to a hex triple. The
+    tab's teal is 0.749 green -- 190.995 of 255 -- and a table redrawn from the
+    byte that survives the trip comes out a step lighter than the artwork it
+    sits in.
+    """
+    if not colour:
+        return None
+    return [float(c) for c in colour[:3]]
+
+
+def _frame_paths(
+    page: fitz.Page,
+    page_rect: fitz.Rect,
+    extent: fitz.Rect,
+    *,
+    top: float,
+    pitch: float,
+    rows: int,
+) -> tuple[list[dict], fitz.Rect] | None:
+    """The line art a table block is ruled with, and the region it occupies.
+
+    The frame is everything the designer drew from the top of the first row
+    downward: the rules closing each row, the dividers between the columns, and
+    the numbered tab down the edge. What sits above that line is the block's
+    header bar, with the column titles outlined into it -- design that does not
+    move when the table gets shorter, and is left exactly where it is.
+
+    The block extent bounds the search, which is what keeps the navy page
+    honest. Its artwork is placed as a form carrying the whole of the page it
+    was lifted from, so ``get_drawings`` reports a second, clipped-away copy of
+    every shape 340.91pt above the visible one. Those fall outside the extent
+    and are neither captured nor erased -- they are invisible, and taking them
+    off would be a change to a page nobody asked us to touch.
+
+    ``None`` where the block does not look like the one that was measured, which
+    leaves the table the fixed height it has always been rather than redrawing
+    it from a guess.
+    """
+    grown = extent + (-1, -1, 1, 1)
+    found: list[dict] = []
+    for drawing in page.get_drawings():
+        rect = fitz.Rect(drawing["rect"])
+        rect.normalize()
+        if rect.get_area() > page_rect.get_area() * BACKDROP_AREA:
+            continue
+        if rect.x0 < grown.x0 or rect.x1 > grown.x1:
+            continue
+        if rect.y0 < grown.y0 or rect.y1 > grown.y1:
+            continue
+        if rect.y1 <= top:
+            continue  # the header bar and its titles: above the first row
+        found.append(drawing)
+    if not found:
+        return None
+
+    rules = sorted(
+        (d for d in found if fitz.Rect(d["rect"]).height <= RULE_MAX_HEIGHT),
+        key=lambda d: fitz.Rect(d["rect"]).y0,
+    )
+    # A rule per row, and at most one more. «بيان العقارات» rules ten bands for
+    # its ten rows; «بيان عقود الإيجار» rules twenty and numbers nineteen, and
+    # that twentieth is the block's bottom edge rather than a row anyone can
+    # fill. Any other count means this is not the block the geometry was read
+    # from, and a table redrawn from a misread frame is worse than one that
+    # never shrinks.
+    if not rows <= len(rules) <= rows + 1:
+        return None
+    # Each rule has to fall in the band of the row it is taken to close, or the
+    # reading is off by one somewhere and every short table would be ruled in
+    # the wrong places.
+    for row, rule in enumerate(rules[:rows]):
+        want = top + (row + 1) * pitch
+        if abs(fitz.Rect(rule["rect"]).y0 - want) > pitch / 2:
+            return None
+
+    # Measured by hand rather than by unioning the rects. A rule is a stroke,
+    # and a stroke's rect is degenerate -- zero wide down a column divider, zero
+    # high along a row rule -- which makes it an empty ``fitz.Rect``, and
+    # ``Rect.__or__`` ignores an empty rect. Unioned, the region came out as the
+    # numbered tab alone: the tab was lifted off the artwork and all seventeen
+    # rules stayed exactly where they were, so the redraw landed on top of them
+    # and the lines printed a third too dark.
+    boxes = [fitz.Rect(d["rect"]) for d in found]
+    region = fitz.Rect(
+        min(min(b.x0, b.x1) for b in boxes),
+        min(min(b.y0, b.y1) for b in boxes),
+        max(max(b.x0, b.x1) for b in boxes),
+        max(max(b.y0, b.y1) for b in boxes),
+    )
+    return found, region
+
+
+def _capture_frame(
+    page: fitz.Page,
+    page_rect: fitz.Rect,
+    extent: fitz.Rect,
+    *,
+    top: float,
+    pitch: float,
+    rows: int,
+) -> TableFrame | None:
+    """Lift a block's ruling off the page, so the renderer can put back as much
+    of it as the auction has rows to fill.
+
+    Recorded as the designer's own segments -- lines and bezier curves, in the
+    order they were drawn, in the colour and stroke width they were drawn in.
+    The numbered tab is a notched shape with rounded corners, and a table that
+    shrank by redrawing it as a rectangle would be a different design.
+    """
+    caught = _frame_paths(
+        page, page_rect, extent, top=top, pitch=pitch, rows=rows
+    )
+    if caught is None:
+        return None
+    found, _ = caught
+
+    def norm_x(value: float) -> float:
+        return (value - page_rect.x0) / page_rect.width
+
+    def norm_y(value: float) -> float:
+        return (value - page_rect.y0) / page_rect.height
+
+    rule_order = sorted(
+        (
+            index
+            for index, d in enumerate(found)
+            if fitz.Rect(d["rect"]).height <= RULE_MAX_HEIGHT
+        ),
+        key=lambda index: fitz.Rect(found[index]["rect"]).y0,
+    )
+    # Rule k closes row k, read in the rules' own order down the page rather
+    # than matched against a pitch: the designer's steps are not all equal, and
+    # only the sequence says which rule belongs to which row. ``_frame_paths``
+    # has already checked that each one lands in its row's band.
+    row_of = {index: row for row, index in enumerate(rule_order[:rows])}
+    rules = [
+        norm_y(fitz.Rect(found[index]["rect"]).y0) for index in rule_order[:rows]
+    ]
+    # The block's drawn bottom edge: the last rule on the page, which is the
+    # last row's on «بيان العقارات» and one unnumbered band lower on the lease
+    # page. The dividers and the tab are drawn to this line, so it is what
+    # shortening measures from -- and where it is not a row's rule it is not
+    # redrawn at all, because an unnumbered band is an empty row.
+    bottom = norm_y(fitz.Rect(found[rule_order[-1]]["rect"]).y0)
+    trailing = set(rule_order[rows:])
+
+    paths: list[FramePath] = []
+    for index, drawing in enumerate(found):
+        if index in trailing:
+            continue
+        items: list[FrameItem] = []
+        for item in drawing["items"]:
+            kind = item[0]
+            if kind == "l":
+                corners = [item[1], item[2]]
+            elif kind == "c":
+                corners = [item[1], item[2], item[3], item[4]]
+            elif kind == "re":
+                box = fitz.Rect(item[1])
+                corners = [
+                    fitz.Point(box.x0, box.y0), fitz.Point(box.x1, box.y0),
+                    fitz.Point(box.x1, box.y1), fitz.Point(box.x0, box.y1),
+                    fitz.Point(box.x0, box.y0),
+                ]
+                kind = "l"
+            else:
+                # A quad, or anything else the designer did not use here.
+                # Leaving the block alone beats redrawing it with a piece
+                # missing.
+                return None
+            flat: list[float] = []
+            for point in corners:
+                flat.extend((norm_x(point.x), norm_y(point.y)))
+            if kind == "l":
+                for start in range(0, len(flat) - 2, 2):
+                    items.append(FrameItem("l", flat[start : start + 4]))
+            else:
+                items.append(FrameItem(kind, flat))
+        paths.append(
+            FramePath(
+                items=items,
+                stroke=_ink(drawing.get("color")),
+                fill=_ink(drawing.get("fill")),
+                width=float(drawing.get("width") or 0.0),
+                closed=bool(drawing.get("closePath")),
+                row=row_of.get(index),
+            )
+        )
+    return TableFrame(rules=rules, paths=paths, bottom=bottom)
+
+
+def _erase_frame(
+    page: fitz.Page,
+    page_rect: fitz.Rect,
+    extent: fitz.Rect,
+    *,
+    top: float,
+    pitch: float,
+    rows: int,
+) -> bool:
+    """Take a block's ruling off the artwork, leaving its header bar alone.
+
+    The bake keeps line art everywhere else, because everywhere else the line
+    art is the design. Here the ruling is being replaced by the same ruling
+    drawn to the length the auction needs, so it comes off -- and only it: the
+    region is the union of the shapes captured, which begins below the header
+    bar and ends at the foot of the tab.
+    """
+    caught = _frame_paths(
+        page, page_rect, extent, top=top, pitch=pitch, rows=rows
+    )
+    if caught is None:
+        return False
+    wanted, region = caught
+    # Read before the annotation goes on: a redaction annotation is itself a
+    # drawing -- a red box the width of a point -- and counting it as artwork
+    # made the check below report the frame as one shape too many.
+    before = {_shape_id(d) for d in page.get_drawings()}
+    page.add_redact_annot(region + (-1, -1, 1, 1))
+    page.apply_redactions(
+        images=fitz.PDF_REDACT_IMAGE_NONE,
+        graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
+    )
+    after = {_shape_id(d) for d in page.get_drawings()}
+    gone = before - after
+    should_go = {_shape_id(d) for d in wanted}
+    if gone != should_go:
+        raise MapError(
+            f"page {page.number}: erasing the table frame took "
+            f"{len(gone)} shapes off the artwork, not the {len(should_go)} "
+            f"captured -- {sorted(gone - should_go)!r} should have stayed and "
+            f"{sorted(should_go - gone)!r} should have gone"
+        )
+    return True
+
+
+def _shape_id(drawing: dict) -> tuple:
+    """A drawing named by where it is and what it is drawn in.
+
+    Its position in ``get_drawings`` is not a name: removing one renumbers the
+    rest, which is exactly the comparison this has to survive.
+    """
+    rect = fitz.Rect(drawing["rect"])
+    rect.normalize()
+    return (
+        tuple(round(v, 2) for v in rect),
+        round(float(drawing.get("width") or 0.0), 3),
+        _ink(drawing.get("color")) and tuple(_ink(drawing["color"])),
+        _ink(drawing.get("fill")) and tuple(_ink(drawing["fill"])),
+    )
+
+
+def _lease_frame(
+    page: fitz.Page, page_rect: fitz.Rect, spec: FieldSpec
+) -> TableFrame | None:
+    """The lease block's ruling on a page the build made a copy of.
+
+    The copy is taken before any of this, so it still wears the ruling its
+    original has had lifted off. Its geometry is the original's -- the copy is
+    the same page in another colour -- so the block is described from the field
+    already built for it rather than measured a second time.
+    """
+    table = spec.table
+    if table is None:
+        return None
+    body = spec.rect.to_points(page_rect)
+    return _lift_frame(
+        page, page_rect, body,
+        pitch=table.row_pitch * page_rect.height, rows=table.rows,
+    )
+
+
+def _lift_frame(
+    page: fitz.Page,
+    page_rect: fitz.Rect,
+    body: fitz.Rect,
+    *,
+    pitch: float,
+    rows: int,
+) -> TableFrame | None:
+    """Capture a block's ruling and take it off the artwork, or do neither.
+
+    The two halves are one call because either alone prints wrong. Captured but
+    not erased, the redraw lands on top of the original and every line comes out
+    a third too dark; erased but not captured, the page loses its table.
+    """
+    extent = _extent_around(page, body, pitch, page_rect)
+    frame = _capture_frame(
+        page, page_rect, extent, top=body.y0, pitch=pitch, rows=rows
+    )
+    if frame is None:
+        return None
+    if not _erase_frame(
+        page, page_rect, extent, top=body.y0, pitch=pitch, rows=rows
+    ):
+        return None
+    return frame
 
 
 def _erase_blocks(page: fitz.Page, extents: list[fitz.Rect]) -> None:
@@ -2444,11 +3001,33 @@ def _sections_from(source_map: SourceMap, capacity: dict[int, int]) -> list[Sect
 
 def build(source_map: SourceMap, source: Path, out_dir: Path) -> dict:
     doc = fitz.open(source)
-    assert_map(doc, source_map)
+    extra = {
+        name: fitz.open(_require_source(name)) for name in source_map.extra_sources
+    }
+    assert_map(doc, source_map, extra)
 
-    # Pruning happens once, up front: after the select, page N of the document
-    # is entry N of the map, and no index has to be remapped later.
-    doc.select(source_map.indices)
+    # Pruning happens once, up front: after this, page N of the document is
+    # entry N of the map, and no index has to be remapped later.
+    #
+    # A map cut from one export keeps ``select``, which is what it has always
+    # done and what the built manifests reproduce byte for byte. A map that
+    # grafts a page from another export cannot: ``select`` can only keep pages
+    # the document already has. That one is assembled a page at a time instead.
+    known_marks: dict[str, list[list[int]]] = {}
+    if extra:
+        # Learned from each whole export before its pages are taken out of it.
+        for name, book in extra.items():
+            known_marks[name] = agent_silhouettes(book)
+        composed = fitz.open()
+        for mapped in source_map.pages:
+            book = extra[mapped.source] if mapped.source else doc
+            composed.insert_pdf(book, from_page=mapped.index, to_page=mapped.index)
+        doc.close()
+        doc = composed
+    else:
+        doc.select(source_map.indices)
+    for book in extra.values():
+        book.close()
     kept = len(source_map.pages)
     page_rect = doc[0].rect
 
@@ -2497,6 +3076,28 @@ def build(source_map: SourceMap, source: Path, out_dir: Path) -> dict:
         )
         table_blocks = table_blocks[:1]
 
+    # The summary table's ruling, off the artwork and onto the field, so the
+    # block ends at the last property rather than at the tenth row the designer
+    # had to draw it to. Both colourways: same geometry, and the teal one's
+    # lines are teal where the navy one's are navy, so each is read off its own
+    # page. Done here, with the pages in their final form and before anything is
+    # derived or baked, because from here on the frame is the field's.
+    frames: dict[int, TableFrame] = {}
+    if table_blocks and table_position is not None:
+        block = table_blocks[0]
+        body = fitz.Rect(block.first_row_pt)
+        for row in range(block.rows):
+            body |= block.row_rect(row)
+        for index in (table_position, navy_index):
+            if index is None:
+                continue
+            frame = _lift_frame(
+                doc[index], page_rect, body,
+                pitch=block.row_pitch, rows=block.rows,
+            )
+            if frame is not None:
+                frames[index] = frame
+
     derived = derive_document(doc)
 
     specs: list[FieldSpec] = []
@@ -2515,6 +3116,9 @@ def build(source_map: SourceMap, source: Path, out_dir: Path) -> dict:
                 blocks=table_blocks if summary else None,
                 continuous=not summary,
             )
+            for spec in found:
+                if spec.table is not None and position in frames:
+                    spec.table.frame = frames[position]
             specs.extend(found)
             table_cells[position].extend(cells)
             if not found:
@@ -2600,6 +3204,14 @@ def build(source_map: SourceMap, source: Path, out_dir: Path) -> dict:
                 twin.key = spec.key.replace(
                     f"__table__{lease_position}_", f"__table__{lease_teal_index}_"
                 )
+                # Same rows in the same places, ruled in the other identity
+                # colour. Read off its own page rather than copied: the teal
+                # page is made by rewriting the colour its content stream asks
+                # for, so the geometry is the navy page's and the ink is not.
+                if twin.table is not None:
+                    twin.table.frame = _lease_frame(
+                        doc[lease_teal_index], page_rect, spec
+                    )
             twin.origin = f"{spec.origin}/colourway=teal"
             specs.append(twin)
 
@@ -2609,7 +3221,16 @@ def build(source_map: SourceMap, source: Path, out_dir: Path) -> dict:
 
     # Last, so it sees every page this build makes: the mapped pages, the six
     # covers and the navy summary page.
-    branded = _rebrand(doc, page_rect)
+    # Pages appended after the map's own -- the covers, the navy summary, the
+    # recoloured lease page -- are this map's own export by construction.
+    page_source = [m.source for m in source_map.pages]
+    page_source += [""] * max(0, doc.page_count - len(page_source))
+    bands = {
+        position: m.agent_mark
+        for position, m in enumerate(source_map.pages)
+        if m.agent_mark
+    }
+    branded = _rebrand(doc, page_rect, page_source, known_marks, bands)
     specs.extend(branded)
 
     # The navy colourway is the teal block's artwork in another colour at the
@@ -2624,6 +3245,9 @@ def build(source_map: SourceMap, source: Path, out_dir: Path) -> dict:
             )
             twin.page_index = navy_index
             twin.origin = f"{spec.origin}/colourway=navy"
+            # Same rows in the same places, drawn in the other identity colour.
+            if twin.table is not None:
+                twin.table.frame = frames.get(navy_index)
             specs.append(twin)
 
     # The unbaked artwork, already pruned and reordered, so its page indices
@@ -2769,10 +3393,24 @@ def _field_json(spec: FieldSpec) -> dict[str, Any]:
     return data
 
 
-def _find_source(pages: int) -> Path | None:
-    """The designer's export with this many pages, wherever it is on disk."""
+def _find_source(pages: int, name: str = "") -> Path | None:
+    """The designer's export this map describes, wherever it is on disk.
+
+    ``name`` is a distinctive part of the filename and is what actually
+    identifies the export; ``pages`` then confirms it is the revision the map
+    was written against. Page count alone stopped being an identifier when a
+    second sixteen-page booklet arrived — the electronic one — and a search by
+    count would have handed one of the two templates the other's artwork.
+
+    The filenames round-trip badly (Arabic, and some carry stray bidi marks), so
+    the match is a substring of the stem with those marks stripped rather than
+    an equality test on a name anyone has to type exactly.
+    """
+    wanted = _plain(name)
     for root in (REFERENCES, BACKEND.parent):
         for candidate in sorted(root.glob("*.pdf")):
+            if wanted and wanted not in _plain(candidate.stem):
+                continue
             try:
                 with fitz.open(candidate) as doc:
                     if doc.page_count == pages:
@@ -2780,6 +3418,33 @@ def _find_source(pages: int) -> Path | None:
             except Exception:
                 continue
     return None
+
+
+def _require_source(name: str) -> Path:
+    """An export named by a page that is grafted from it.
+
+    Unlike a map's own export there is no page count to confirm it against, so
+    the name has to be distinctive enough on its own — and the build stops
+    rather than quietly falling back to the map's own artwork, which is the
+    borrowing this is here to end.
+    """
+    wanted = _plain(name)
+    for root in (REFERENCES, BACKEND.parent):
+        for candidate in sorted(root.glob("*.pdf")):
+            if wanted and wanted in _plain(candidate.stem):
+                return candidate
+    raise MapError(f"no export matching {name!r} found under {REFERENCES}")
+
+
+#: Marks a filename may carry that nobody means to type: bidi controls, the
+#: BOM, and the tatweel some exporters put in Arabic filenames.
+_FILENAME_NOISE = dict.fromkeys(
+    [0xFEFF, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x0640]
+)
+
+
+def _plain(text: str) -> str:
+    return unicodedata.normalize("NFKC", text).translate(_FILENAME_NOISE).strip()
 
 
 def main() -> None:
@@ -2796,10 +3461,11 @@ def main() -> None:
         parser.error(f"no page map named {args.slug!r}")
 
     for source_map in wanted:
-        source = _find_source(source_map.source_pages)
+        source = _find_source(source_map.source_pages, source_map.source)
         if source is None:
             print(f"  ! {source_map.slug}: no {source_map.source_pages}-page "
-                  f"export found under {REFERENCES}")
+                  f"export matching {source_map.source!r} found under "
+                  f"{REFERENCES}")
             continue
         if not source_map.covers:
             print(f"  ! {source_map.slug}: cover designs not found; "

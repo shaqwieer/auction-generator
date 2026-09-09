@@ -94,6 +94,29 @@ class SourcePage:
     #: Set where a variant reuses another variant's artwork because its own has
     #: not been supplied. Recorded so the swap is a one-line map edit.
     needs_artwork: str = ""
+    #: Where this page's export draws the selling agent's lockup, in 0..1 of the
+    #: page, as regions of (x0, y0, x1, y1). A page may carry more than one --
+    #: the contact page prints the agent's mark large at the top, where the guide
+    #: puts شعار وكيل البيع, as well as small in the footer.
+    #:
+    #: Normally nothing: the build finds the mark by the silhouette that recurs
+    #: across the booklet, which is what makes it the agent's rather than a
+    #: heading. That test needs a booklet. A page grafted out of another export
+    #: is two or three pages, and the electronic export's lockup is not a
+    #: candidate either sweep returns — so on those pages the region is stated
+    #: instead, and the build takes the *ink actually inside it* rather than the
+    #: band itself. Measured, not guessed, and deliberately nowhere near the
+    #: Infath mark on the opposite side of the same footer.
+    agent_mark: tuple[tuple[float, float, float, float], ...] = ()
+    #: Which export this page is cut from, when it is not the map's own.
+    #:
+    #: A template is normally one export, and this is empty. It is not always:
+    #: the electronic booklet arrived as a finished auction rather than a blank
+    #: template, so it carries its own معلومات المزاد and شروط الدخول — the two
+    #: pages that were being borrowed — but no برج layout and none of three
+    #: optional pages. Grafting the two it has beats rebuilding from it and
+    #: losing the four it has not. The value is a `SourceMap.source` stem.
+    source: str = ""
 
     @property
     def is_lot(self) -> bool:
@@ -112,15 +135,34 @@ class SourceMap:
     source_pages: int
     pages: tuple[SourcePage, ...] = ()
     covers: tuple[Path, ...] = field(default=())
+    #: A distinctive part of the export's filename.
+    #:
+    #: Page count alone stopped identifying an export the moment a second
+    #: 16-page booklet arrived: the حضوري export and the electronic one both
+    #: have sixteen, and a search by count returns whichever the filesystem
+    #: happens to sort first. One of the two templates would then have been
+    #: built, silently, from the other's artwork.
+    source: str = ""
 
     def __post_init__(self) -> None:
-        seen: set[int] = set()
+        # An index only means anything against the export it indexes, so two
+        # pages may share a number as long as they come from different ones.
+        seen: set[tuple[str, int]] = set()
         for page in self.pages:
-            if page.index in seen:
-                raise MapError(f"{self.slug}: source page {page.index} listed twice")
-            seen.add(page.index)
+            at = (page.source, page.index)
+            if at in seen:
+                where = f" of {page.source}" if page.source else ""
+                raise MapError(
+                    f"{self.slug}: source page {page.index}{where} listed twice"
+                )
+            seen.add(at)
         if not any(p.role is PageRole.LOT for p in self.pages):
             raise MapError(f"{self.slug}: a booklet needs at least one lot page")
+
+    @property
+    def extra_sources(self) -> tuple[str, ...]:
+        """Exports other than this map's own that its pages are cut from."""
+        return tuple(sorted({p.source for p in self.pages if p.source}))
 
     @property
     def indices(self) -> list[int]:
@@ -134,12 +176,20 @@ class SourceMap:
         return {p.layout: p for p in self.pages if p.is_lot}
 
 
-def assert_map(doc: fitz.Document, source_map: SourceMap) -> None:
+def assert_map(
+    doc: fitz.Document,
+    source_map: SourceMap,
+    extra: dict[str, fitz.Document] | None = None,
+) -> None:
     """Fail loudly if the export is not the one the map describes.
 
     Called before anything is derived. A silently wrong cut is far more
     expensive than a failed build: the electronic booklet would print the
     in-person lot pages and nobody downstream would notice.
+
+    ``extra`` holds the other exports a map's pages are cut from, by name. A
+    grafted page is checked against the export it actually comes from — checking
+    it against the map's own would read a different page entirely.
     """
     if doc.page_count != source_map.source_pages:
         raise MapError(
@@ -147,8 +197,19 @@ def assert_map(doc: fitz.Document, source_map: SourceMap) -> None:
             f"export, this one has {doc.page_count}"
         )
 
+    others = extra or {}
+    missing = [name for name in source_map.extra_sources if name not in others]
+    if missing:
+        raise MapError(f"{source_map.slug}: no export supplied for {missing}")
+
     for page in source_map.pages:
-        text = normalise(doc[page.index].get_text())
+        book = others[page.source] if page.source else doc
+        if page.index >= book.page_count:
+            raise MapError(
+                f"{source_map.slug}: source page {page.index} is past the end "
+                f"of {page.source or 'its export'}"
+            )
+        text = normalise(book[page.index].get_text())
         for marker in page.expect:
             if normalise(marker) not in text:
                 raise MapError(

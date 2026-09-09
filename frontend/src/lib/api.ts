@@ -142,6 +142,7 @@ export function nodePreviewUrl(
     stamp,
     omit,
     version,
+    flavour,
   }: {
     dpi?: number;
     page?: number;
@@ -154,6 +155,13 @@ export function nodePreviewUrl(
      * booklet — so without this the builder keeps showing the old artwork.
      */
     version?: number;
+    /**
+     * Paper or screen. The server already keys its own cache on this, but the
+     * browser keys on the URL — and switching the output changes neither the
+     * plan's revision nor the template's version, so without it the `<img>`
+     * src is unchanged and the page keeps showing the other flavour's chips.
+     */
+    flavour?: string;
   } = {},
 ): string {
   const query = new URLSearchParams({ dpi: String(dpi) });
@@ -161,6 +169,7 @@ export function nodePreviewUrl(
   if (stamp !== undefined) query.set("v", String(stamp));
   if (omit) query.set("omit", omit);
   if (version !== undefined) query.set("t", String(version));
+  if (flavour) query.set("f", flavour);
   return `${API_URL}/api/v1/projects/${projectId}/plan/nodes/${nodeId}/preview.png?${query}`;
 }
 

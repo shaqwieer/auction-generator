@@ -33,10 +33,70 @@ import { PageCanvas, placement } from "@/components/pagecanvas";
 import { Labelled } from "@/components/ui";
 import type { TemplateFieldOut } from "@/types/api";
 
+/**
+ * The company's own mark and name, which the booklet fills in by itself.
+ *
+ * The designer drew the selling agent's lockup on seventeen pages, and the
+ * build puts `company_logo` there and `company_name` on تعريف وكيل البيع. Both
+ * are resolved from the signed-in account at compose time — `page_plan.branding`
+ * — never from the project, so a logo uploaded this afternoon appears on the
+ * booklet started this morning.
+ *
+ * So neither belongs in the builder. Offered per page they were asked for on
+ * every page that carries a mark, and because a node's values beat the
+ * project's, uploading on one page would have overridden the account's logo on
+ * that page alone — a booklet branded two ways. They are changed once, in
+ * إعدادات الشركة.
+ */
+const BRANDING = new Set(["company_logo", "company_name"]);
+
+/**
+ * The fields of one page in the order a reader meets them.
+ *
+ * The API hands them over ordered by page alone (`TemplateField.page_index`),
+ * which leaves the order within a page to however the derive sweep happened to
+ * emit them — so الحقول listed a page's boxes in an order with no relation to
+ * the page beside it, and filling a form meant hunting for the next box.
+ *
+ * Arabic reads top to bottom, right to left, so that is the order: down by `y`,
+ * then right to left by `x`. `x` is the distance from the **left** edge, so
+ * right-to-left is *descending* x.
+ *
+ * Rows are grouped before sorting. Boxes a designer set on one visual line
+ * differ in `y` by a hair — on the property page النوع, المساحة and شمالا sit
+ * within 0.005 of each other — and a raw `y` sort reads those as three rows and
+ * interleaves the columns.
+ *
+ * The grouping walks the fields in `y` order and starts a new row when one
+ * opens further than `ROW_TOLERANCE` below the row's first box. It is not a
+ * fixed band: bands are cut at absolute positions, so a row that happens to
+ * straddle a boundary is split no matter how wide the band is, and a band wide
+ * enough to be safe swallows the next row whole. Measured on the property page,
+ * a row spans 0.005 and the pitch between rows is 0.021 — the tolerance sits
+ * between the two.
+ */
+const ROW_TOLERANCE = 0.012;
+
+export function inReadingOrder(fields: TemplateFieldOut[]): TemplateFieldOut[] {
+  const byY = [...fields].sort((a, b) => a.y - b.y);
+  const rows: TemplateFieldOut[][] = [];
+  for (const field of byY) {
+    const row = rows[rows.length - 1];
+    const first = row?.[0];
+    if (row && first && field.y - first.y <= ROW_TOLERANCE) row.push(field);
+    else rows.push([field]);
+  }
+  // Right to left within the row: `x` is the distance from the left edge.
+  return rows.flatMap((row) => row.sort((a, b) => b.x - a.x));
+}
+
 /** Fields that can be typed *on the page*. Tables draw themselves from the data. */
 export function fillable(fields: TemplateFieldOut[]): TemplateFieldOut[] {
   return fields.filter(
-    (field) => field.type === "text" && !field.key.startsWith("__"),
+    (field) =>
+      field.type === "text" &&
+      !field.key.startsWith("__") &&
+      !BRANDING.has(field.key),
   );
 }
 
@@ -66,6 +126,7 @@ export function askable(fields: TemplateFieldOut[]): TemplateFieldOut[] {
     (field) =>
       (field.type === "text" || field.type === "link") &&
       !field.key.startsWith("__") &&
+      !BRANDING.has(field.key) &&
       !SECTIONED.has(field.key),
   );
 }
@@ -91,7 +152,9 @@ export function resolvedDefault(
 }
 
 export function photoFields(fields: TemplateFieldOut[]): TemplateFieldOut[] {
-  return fields.filter((field) => field.type === "image");
+  return fields.filter(
+    (field) => field.type === "image" && !BRANDING.has(field.key),
+  );
 }
 
 export function PageEditor({

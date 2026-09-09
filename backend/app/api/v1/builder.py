@@ -441,6 +441,10 @@ def node_preview(
         instance.values = {
             key: value for key, value in instance.values.items() if key != omit
         }
+    # Clearing the value is not the whole hole. A field with a ``default_value``
+    # draws that when no value is given -- which is exactly what the unified
+    # auction title relies on -- so the renderer is told to leave the field out
+    # altogether, not merely to find it empty.
     # Mints the permanent address behind any link this page carries, so the
     # builder shows the code that will actually be printed rather than a
     # stand-in. A read that writes, but what it writes is an identifier that has
@@ -449,7 +453,9 @@ def node_preview(
     assets = generation.assets_for_project(db, project)
 
     try:
-        png, key, _ = preview.render_page(project, instance, dpi=dpi, assets=assets)
+        png, key, _ = preview.render_page(
+            project, instance, dpi=dpi, assets=assets, omit=omit
+        )
     except preview.PreviewError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 

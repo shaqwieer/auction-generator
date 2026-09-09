@@ -33,6 +33,7 @@ from app.rendering.base import (
     TableSpec,
 )
 from app.rendering.compose import Section
+from app.rendering.manifest import frame_from_json
 from app.rendering.shaping import Align, Fit, VAlign
 
 
@@ -208,6 +209,10 @@ def field_to_spec(row: TemplateField) -> FieldSpec:
             rows=int(row.table_spec.get("rows", 0)),
             row_pitch=float(row.table_spec.get("row_pitch", 0.0)),
             row_offset=int(row.table_spec.get("row_offset", 0)),
+            # Parsed by the manifest loader rather than again here: the frame is
+            # the same JSON whichever side of the database it is read from, and
+            # a table drawn from two parsers is a table drawn two ways.
+            frame=frame_from_json(row.table_spec.get("frame")),
         )
     return FieldSpec(
         key=row.key,

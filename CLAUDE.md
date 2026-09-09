@@ -79,6 +79,53 @@ directory named `alembic` shadows the installed package.
   the navy block 01–08, both restarting, and its instruction for a long list is
   «فيتم تكرار الصفحة» — repeat the page. Those two blocks are colourways, built
   as two pages sharing `slot="lot_table"`, ten rows each.
+- **A table is as tall as the auction is long.** This holds for both tables —
+  «بيان العقارات» and «بيان عقود الإيجار» — and for both colourways of each,
+  every one of the four read off its own page rather than copied from another:
+  the lease block is ten columns to the summary's nine and nineteen rows to its
+  ten, and its teal page is made by rewriting the colour its content stream
+  asks for, so the geometry is shared and the ink is not. The artwork ships
+  them ruled full because a printed page has to be drawn for some number; ten
+  rows for four properties left six ruled empties and the numbered tab running
+  past all of them. The build lifts the block's line art off the
+  page -- the rules, the column dividers and the tab -- stores it on the field
+  as `TableFrame`, and the renderer draws back as many rows as there are. Not a
+  white patch over the surplus: the page is coloured, so a patch is a patch.
+  Shortening is a *translation* of the designer's own points, never a rebuild --
+  every point below a shape's own middle moves up by the distance between the
+  rule the block was drawn to and the rule it now ends on -- because the tab is
+  a notched shape with bezier corners and redrawing it as a rectangle is a
+  different design. The rules are stored **as measured**, not as a pitch: the
+  steps are 26.02pt apart except for two of 28.56, and a block rebuilt from an
+  average rules the wrong places. `frame` keeps the PDF's own float ink rather
+  than `#RRGGBB` — the tab's teal is 0.749 green, 190.995 of 255, and the byte
+  that survives the round trip prints a step light. A full summary block must come out
+  pixel-identical to the artwork it replaced; that is the check that makes every
+  shorter one trustworthy, and `test_a_full_table_is_the_ruling_the_designer_drew`
+  is where it lives.
+- **A block's bottom edge is not always its last row.** The dividers and the tab
+  run to `TableFrame.bottom`, and shortening measures from there. On «بيان
+  العقارات» that is the last row's own rule, so a full block is its artwork
+  exactly. On «بيان عقود الإيجار» the designer ruled *twenty* bands, numbered
+  nineteen, and drew the tab to the twentieth — so the bottom edge sits a whole
+  band below the last row a client can fill. That band is captured, erased and
+  never redrawn: it is an empty row, which is the thing this is all for. A full
+  lease table is therefore its artwork one band shorter, and every shorter one
+  ends under its last lease. A rule falling in no row's band is the bottom edge;
+  two of them means the block was misread and the build refuses rather than
+  guessing, as it does when a rule misses the band of the row it would close.
+- **The lease table reaches `_uniform_table`, not the derived path**, because
+  its column headers are outlined and `derive_tables` never sees it. That
+  changes how the block is *found* — from its printed row numbers — not what it
+  is, so it gets its frame the same way, through `_lift_frame`.
+- **Removing a stroke needs its region measured by hand.** `_erase_frame` takes
+  the frame off the artwork with one redaction over the union of its shapes, and
+  the union cannot be built with `|=`: a rule is a stroke, its rect is
+  degenerate, and `Rect.__or__` ignores an empty rect. Unioned, the region came
+  out as the tab alone — the tab was lifted and all seventeen rules stayed, so
+  the redraw landed on top of the original and every line printed a third too
+  dark. The build now checks that erasing took exactly the shapes it captured
+  and nothing else, which is what makes the removal safe to keep.
 - **Every page a template keeps needs a rule set.** Baking clears only what a
   field will draw over, so a page that is kept but not described keeps the
   designer's sample data printed into the background. `scripts/pagemaps/` says
@@ -288,6 +335,22 @@ directory named `alembic` shadows the installed package.
   working when the API is reached some other way.
 
 ## The lease table
+- **A table too long for its page repeats the page.** «فيتم تكرار الصفحة» is
+  the guide's answer for properties and it is the answer for contracts too. Each
+  table paginates at *its own artwork's* capacity — ten for «بيان العقارات»,
+  nineteen for «بيان عقود الإيجار» — and neither number is a guide to the other.
+  The repeat carries the same full header and table artwork, `__row_offset__`
+  carries the numbering across it (row 20 reads «20», not «01»), and the last
+  page is ruled only for the rows it actually holds. `compose` needs the
+  capacity to work this out and only the template knows it, so
+  `page_plan.lease_rows_per_page` passes it in as a page→rows mapping; the same
+  mapping feeds `page_count_plan`, or the review step promises a page count the
+  booklet does not print. A lease page with nothing typed on it is still drawn
+  once — switching it on is how the operator gets somewhere to type.
+- **The builder previews the first of a repeat, not all of them.** A node's page
+  switcher is built from `node.pages`, which holds template page indices, and a
+  repeat is the same index twice. This is true of the summary table as well and
+  always has been; the repeats are in the generated booklet.
 - **بيان عقود الإيجار is typed, not derived.** بيان العقارات builds itself from
   the booklet's properties; nothing in the system knows what leases an asset
   carries, so the rows live on the lot node (`values["__lease__"]`) in the order

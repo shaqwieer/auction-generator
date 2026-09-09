@@ -12,6 +12,7 @@ the artwork once, not twenty times.
 from __future__ import annotations
 
 import re
+from itertools import pairwise
 
 import fitz
 
@@ -49,6 +50,12 @@ GOTO_PREFIX = "__goto_"
 #: under a reserved key rather than merged into the values so that nothing
 #: starts printing merely because the booklet knows it. See ``compose``.
 DEFAULTS_KEY = "__booklet__"
+
+#: What a table cell prints when the property exists but the fact does not.
+#: The guide's own instruction for بيان العقارات, and a hyphen rather than a
+#: dash because that is the character it prints.
+MISSING_CELL = "-"
+
 
 _SLOT = re.compile(r"\{([a-z0-9_]+)\}")
 
@@ -353,6 +360,79 @@ class PyMuPDFOverlayRenderer:
             return
         page.insert_image(rect, stream=png, keep_proportion=True)
 
+    def _draw_frame(self, page, table, count: int) -> None:
+        """Rule the block for the rows it actually has.
+
+        The artwork ships the table ruled for ten because a printed page has to
+        be drawn for some number, and the build lifts that ruling off it. Here
+        it goes back on, ending at the last row there is: the shapes are the
+        designer's own points, so ten rows come out as the artwork always was
+        and four come out as the same artwork stopping four rows down.
+
+        Shortening is a translation, never a rebuild. Every point below a
+        shape's own middle moves up by the distance between the rule the block
+        was drawn to and the rule it now ends on, which keeps the notch and the
+        bezier corners of the numbered tab intact -- they are the bottom of the
+        shape, not a radius to be inferred.
+        """
+        frame = table.frame
+        if frame is None or not frame.rules:
+            return
+        if count <= 0:
+            # No properties, so no table: a block ruled for a single empty row
+            # is still a table that failed to be filled in. The header bar above
+            # it is the designer's and stays.
+            return
+
+        height = page.rect.height
+        last = min(count, len(frame.rules)) - 1
+        # Measured from the block's drawn bottom edge rather than from its last
+        # rule, because on the lease page those are not the same line: the
+        # artwork rules a band below the last row anyone can fill, and a table
+        # that stopped shortening at the last rule would keep that band.
+        delta = (frame.bottom - frame.rules[last]) * height
+
+        # One shape for the whole frame: every ``commit`` appends a content
+        # stream of its own, and eighteen of them for eighteen hairlines is
+        # eighteen times the bookkeeping for one drawing.
+        shape = page.new_shape()
+        for path in frame.paths:
+            if path.row is not None and path.row > last:
+                continue
+            points = [
+                (page.rect.x0 + x * page.rect.width, page.rect.y0 + y * height)
+                for item in path.items
+                for x, y in zip(item.points[::2], item.points[1::2], strict=True)
+            ]
+            if not points:
+                continue
+            # Measured on the shape's own extent, so a rule -- whose points all
+            # sit at one y -- moves not at all, and only what hangs below the
+            # middle of a divider or the tab is drawn up.
+            middle = (min(y for _, y in points) + max(y for _, y in points)) / 2
+            cursor = 0
+            for item in path.items:
+                taken = len(item.points) // 2
+                run = [
+                    fitz.Point(x, y - delta if y > middle else y)
+                    for x, y in points[cursor : cursor + taken]
+                ]
+                cursor += taken
+                if item.kind == "c" and len(run) == 4:
+                    shape.draw_bezier(*run)
+                else:
+                    for start, end in pairwise(run):
+                        shape.draw_line(start, end)
+            # ``None`` is not black: it is how a shape says it is filled but
+            # not stroked, or stroked but not filled.
+            shape.finish(
+                color=tuple(path.stroke) if path.stroke else None,
+                fill=tuple(path.fill) if path.fill else None,
+                width=path.width,
+                closePath=path.closed,
+            )
+        shape.commit()
+
     def _draw_table(self, page, plan, instance, spec, scale, issues) -> None:
         """Draw one block of a repeating table.
 
@@ -366,6 +446,10 @@ class PyMuPDFOverlayRenderer:
         page_offset = int(instance.values.get("__row_offset__", 0))
         slice_ = rows[table.row_offset : table.row_offset + table.rows]
 
+        # The rules and the tab before the values, so a cell's text sits on top
+        # of the line that closes its row, exactly as the designer stacked them.
+        self._draw_frame(page, table, len(slice_))
+
         pitch = table.row_pitch * page.rect.height
         for position, record in enumerate(slice_):
             absolute_row = page_offset + table.row_offset + position
@@ -377,7 +461,14 @@ class PyMuPDFOverlayRenderer:
                     raw = record.get(column.key)
                 value = "" if raw is None else str(raw).strip()
                 if not value:
-                    continue
+                    # A row in this slice is a property that exists, so a cell
+                    # with nothing in it is a fact not supplied — and the guide
+                    # says what to print: «في حال تعذر وجود معلومة يمكن إضافة
+                    # (-) فقط دون حذف العمود». Left blank, a row with three
+                    # gaps in it reads as a table that failed to render rather
+                    # than as an asset whose deed number nobody has yet. The
+                    # column stays either way; it is the cell that says so.
+                    value = MISSING_CELL
 
                 cell = column.rect.to_points(page.rect) + (0, shift, 0, shift)
                 try:

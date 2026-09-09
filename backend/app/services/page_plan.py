@@ -645,6 +645,20 @@ def lease_page_indices(template: Template) -> set[int]:
     return {p.page_index for p in lease_pages(template)}
 
 
+def lease_rows_per_page(template: Template) -> dict[int, int]:
+    """How many contracts each بيان عقود الإيجار page holds, by page.
+
+    Composing needs the number to know where a property's contracts run onto a
+    second page, and only the template knows it -- nineteen on this booklet,
+    against the summary table's ten, because they are different blocks on
+    different pages and neither is a guide to the other.
+    """
+    return {
+        page.page_index: table_rows_per_page(template, page.page_index)
+        for page in lease_pages(template)
+    }
+
+
 def _static(project: Project) -> dict[str, Any]:
     return {**dict(project.static_values or {}), **branding(project)}
 
@@ -662,7 +676,7 @@ def to_instances(
         plan["nodes"],
         record_map(records),
         static_values=_static(project),
-        lease_pages=lease_page_indices(project.template),
+        lease_pages=lease_rows_per_page(project.template),
         project_name=project.name,
     )
 
@@ -683,7 +697,7 @@ def instances_for_node(
             record_map(records),
             static_values=_static(project),
             only=node_id,
-            lease_pages=lease_page_indices(project.template),
+            lease_pages=lease_rows_per_page(project.template),
             project_name=project.name,
         )
         if owner == node_id
@@ -697,7 +711,11 @@ def predicted_pages(project: Project, records: list[DataRecord]) -> int:
     plan = project.page_plan
     if not plan:
         return 0
-    return page_count_plan(plan["nodes"], {r.row_index for r in records})
+    return page_count_plan(
+        plan["nodes"],
+        {r.row_index for r in records},
+        lease_rows_per_page(project.template),
+    )
 
 
 def referenced_values(project: Project) -> dict[str, Any]:

@@ -16,9 +16,12 @@ import fitz
 from .base import (
     FieldSpec,
     FieldType,
+    FrameItem,
+    FramePath,
     NormRect,
     SectionKind,
     TableColumn,
+    TableFrame,
     TableSpec,
 )
 from .compose import Section
@@ -117,6 +120,41 @@ def _column_from(raw: dict) -> TableColumn:
     )
 
 
+def _ink_from(raw: object) -> list[float] | None:
+    if not raw:
+        return None
+    return [float(v) for v in raw]  # type: ignore[union-attr]
+
+
+def frame_from_json(raw: dict | None) -> TableFrame | None:
+    if not raw or not raw.get("rules"):
+        return None
+    rules = [float(y) for y in raw["rules"]]
+    return TableFrame(
+        rules=rules,
+        # A block whose bottom edge is its last row's rule does not have to say
+        # so, which is every table but the lease one.
+        bottom=float(raw.get("bottom") or rules[-1]),
+        paths=[
+            FramePath(
+                items=[
+                    FrameItem(
+                        kind=str(i["kind"]),
+                        points=[float(v) for v in i["points"]],
+                    )
+                    for i in p.get("items", [])
+                ],
+                stroke=_ink_from(p.get("stroke")),
+                fill=_ink_from(p.get("fill")),
+                width=float(p.get("width", 0.0)),
+                closed=bool(p.get("closed", False)),
+                row=None if p.get("row") is None else int(p["row"]),
+            )
+            for p in raw.get("paths", [])
+        ],
+    )
+
+
 def _table_from(raw: dict | None) -> TableSpec | None:
     if not raw:
         return None
@@ -125,6 +163,7 @@ def _table_from(raw: dict | None) -> TableSpec | None:
         rows=int(raw.get("rows", 0)),
         row_pitch=float(raw.get("row_pitch", 0.0)),
         row_offset=int(raw.get("row_offset", 0)),
+        frame=frame_from_json(raw.get("frame")),
     )
 
 

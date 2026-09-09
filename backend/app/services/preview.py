@@ -43,7 +43,11 @@ class PreviewError(RuntimeError):
 
 
 def cache_key(
-    project: Project, instance: PageInstance, dpi: int, assets: dict[str, bytes]
+    project: Project,
+    instance: PageInstance,
+    dpi: int,
+    assets: dict[str, bytes],
+    omit: str | None = None,
 ) -> str:
     payload = json.dumps(
         {
@@ -51,6 +55,10 @@ def cache_key(
             "version": project.template.version,
             "page": instance.template_page_index,
             "values": instance.values,
+            # The holed page is a different raster of the same values: a field
+            # that draws a default draws it whether or not a value was given,
+            # so the hole cannot be inferred from the values alone.
+            "omit": omit or "",
             "assets": sorted(assets),
             "dpi": dpi,
             # Two booklets can carry identical values and draw differently: a
@@ -93,15 +101,23 @@ def render_page(
     *,
     dpi: int = 96,
     assets: dict[str, bytes] | None = None,
+    omit: str | None = None,
 ) -> tuple[bytes, str, bool]:
     """Draw one page. Returns ``(png, key, was_cached)``.
 
     Goes through the same renderer as a real job, over the same baked artwork,
     so what the builder shows is what will print -- not a browser's idea of it.
+
+    ``omit`` leaves one field off the page entirely -- the *field*, not merely
+    its value. Dropping the value is not enough for a field that falls back to
+    a ``default_value``: the auction's name is drawn on the cover whether or not
+    the cover was typed on, so a page holed by clearing the value came back with
+    the name still on it, and the box the client was typing into printed it a
+    second time a few points away in a different font.
     """
     dpi = max(MIN_DPI, min(int(dpi), MAX_DPI))
     payload = assets or {}
-    key = cache_key(project, instance, dpi, payload)
+    key = cache_key(project, instance, dpi, payload, omit)
 
     hit = cached(key)
     if hit is not None:
@@ -110,6 +126,8 @@ def render_page(
     fields: list[FieldSpec]
     fields, _ = template_service.specs_for(project.template)
     fields = template_service.for_output(fields, project.output_flavour)
+    if omit:
+        fields = [f for f in fields if f.key != omit]
     background = template_service.open_background(project.template)
     try:
         if not 0 <= instance.template_page_index < background.page_count:

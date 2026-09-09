@@ -24,9 +24,24 @@ _SUBSET_PREFIX = re.compile(r"^[A-Z]{6}\+")
 
 
 def _split_font(raw: str) -> tuple[str, str]:
-    """``'NHJZGD+RuaqArabic-Medium'`` -> ``('RuaqArabic', 'Medium')``."""
+    """``'NHJZGD+RuaqArabic-Medium'`` -> ``('RuaqArabic', 'Medium')``.
+
+    Two spellings of the same face reach us. Illustrator usually writes
+    ``Family-Weight``; exporting through some versions writes ``Family,Weight``
+    and then appends its own style, so the Bold face arrives as
+    ``RuaqArabic,Bold-Regular``. Split on the comma first and that reads as the
+    Bold face it is — left alone it named a family «RuaqArabic,Bold» that is in
+    no registry, and the field would have failed to render at all.
+    """
     name = _SUBSET_PREFIX.sub("", raw or "")
     name = name.replace("MT", "").strip()
+    family, comma, styled = name.partition(",")
+    if comma:
+        # ``Family,Weight`` or ``Family,Weight-Style``: the weight is the comma's
+        # right-hand side up to any dash, and the trailing style is Illustrator's
+        # own, not the font's.
+        weight = styled.partition("-")[0].strip()
+        return family.strip() or "RuaqArabic", weight or "Regular"
     family, _, weight = name.partition("-")
     return family or "RuaqArabic", (weight or "Regular")
 

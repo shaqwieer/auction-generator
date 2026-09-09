@@ -103,6 +103,71 @@ def test_a_save_that_never_mentions_masks_keeps_them(client, staff, template):
         assert now["preserve_aspect"] == was["preserve_aspect"]
 
 
+def test_a_save_that_never_mentions_the_table_keeps_its_ruling(
+    client, staff, template
+):
+    """The same rule, for the column that decides how tall a table is drawn.
+
+    `table_spec` carries the ruling «بيان العقارات» is redrawn from, and the
+    editor has no control for it either. Dropped on a save, the summary page
+    goes quietly back to ten ruled rows however many properties the auction
+    has -- and the screen would still show exactly what the operator expected.
+    """
+    before = _detail(client, staff, template["id"])["fields"]
+    ruled = {
+        f["key"]: f
+        for f in before
+        if (f.get("table_spec") or {}).get("frame")
+    }
+    assert ruled, "no table carries a frame; this test cannot see the bug"
+
+    payload = [_as_editor_sends(f, drop=("table_spec",)) for f in before]
+    response = client.put(
+        f"/api/v1/templates/{template['id']}/fields", headers=staff, json=payload
+    )
+    assert response.status_code == 200, response.text
+
+    after = {(f["page_index"], f["key"]): f for f in response.json()["fields"]}
+    for key, was in ruled.items():
+        now = after[(was["page_index"], key)]
+        assert now["table_spec"] == was["table_spec"], (
+            f"{key} lost the ruling it is drawn from"
+        )
+
+
+def test_the_ruling_survives_the_database(client, staff, template):
+    """Read back as a spec, not just as JSON.
+
+    Every other test of the frame loads it from the built manifest on disk.
+    That is not the route a booklet is printed through: the API serves from
+    `TemplateField.table_spec`, and a parser that stopped at `row_pitch` would
+    leave the manifest tests green and the printed page ruled for ten.
+    """
+    from app.core.db import SessionLocal
+    from app.models import TemplateField
+    from app.rendering.base import FieldType
+    from app.services.templates import field_to_spec
+
+    session = SessionLocal()
+    try:
+        rows = [
+            r
+            for r in session.query(TemplateField).all()
+            if r.type == FieldType.TABLE.value and (r.table_spec or {}).get("frame")
+        ]
+        assert rows, "no table field in the database carries a frame"
+        for row in rows:
+            spec = field_to_spec(row)
+            frame = spec.table.frame
+            assert frame is not None, f"{row.key} lost its ruling on the way out"
+            assert len(frame.rules) == spec.table.rows
+            assert frame.paths and all(p.items for p in frame.paths)
+            assert any(p.fill for p in frame.paths), "the numbered tab is filled"
+            assert any(p.stroke for p in frame.paths), "the rules are stroked"
+    finally:
+        session.close()
+
+
 def test_a_save_still_applies_what_it_does_carry(client, staff, template):
     """The counterweight: preserving must not become ignoring."""
     before = _detail(client, staff, template["id"])["fields"]

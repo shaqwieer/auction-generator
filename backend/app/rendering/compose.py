@@ -229,7 +229,7 @@ def compose_plan(
     records: dict[int, dict[str, Any]],
     *,
     static_values: dict[str, Any] | None = None,
-    lease_pages: set[int] | None = None,
+    lease_pages: dict[int, int] | None = None,
     project_name: str = "",
 ) -> list[PageInstance]:
     """The pages a plan produces, in booklet order."""
@@ -251,7 +251,7 @@ def compose_plan_indexed(
     *,
     static_values: dict[str, Any] | None = None,
     only: str | None = None,
-    lease_pages: set[int] | None = None,
+    lease_pages: dict[int, int] | None = None,
     project_name: str = "",
 ) -> list[tuple[str, PageInstance]]:
     """Expand a project's page plan into one :class:`PageInstance` per page.
@@ -315,20 +315,41 @@ def compose_plan_indexed(
                 # to lead to. An empty value draws neither the code nor the link.
                 values = {k: v for k, v in values.items() if k != RENT_LINK_KEY}
             for page in node.get("pages", []):
-                on_page = values
-                if lease_pages and int(page) in lease_pages:
+                per_page = (lease_pages or {}).get(int(page))
+                if per_page:
                     # The lease page draws this property's contracts, not the
-                    # booklet's properties, so it carries its own rows.
-                    on_page = {
-                        **values,
-                        "__rows__": list(leases),
-                        "__row_offset__": 0,
-                    }
+                    # booklet's properties, so it carries its own rows -- and it
+                    # repeats for each further blockful, the way the summary
+                    # page does for each further ten properties. «فيتم تكرار
+                    # الصفحة» is the guide's answer to a list longer than a
+                    # page, and it is the same answer here: the same artwork
+                    # again, numbering carrying on where it left off, and the
+                    # last of them ruled only for the leases it actually has.
+                    per_page = max(1, int(per_page))
+                    # One page even with nothing on it: the operator has
+                    # switched the page on and needs somewhere to type.
+                    sheets = max(1, math.ceil(len(leases) / per_page))
+                    for sheet in range(sheets):
+                        out.append((
+                            owner,
+                            PageInstance(
+                                template_page_index=int(page),
+                                values={
+                                    **values,
+                                    "__rows__": leases[
+                                        sheet * per_page : (sheet + 1) * per_page
+                                    ],
+                                    "__row_offset__": sheet * per_page,
+                                },
+                                record_index=node["row"],
+                            ),
+                        ))
+                    continue
                 out.append((
                     owner,
                     PageInstance(
                         template_page_index=int(page),
-                        values=on_page,
+                        values=values,
                         record_index=node["row"],
                     ),
                 ))
@@ -367,7 +388,7 @@ GOTO_PREFIX = "__goto_"
 
 
 def _point_lease_chips_at_their_page(
-    pages: list[tuple[str, PageInstance]], lease_pages: set[int] | None
+    pages: list[tuple[str, PageInstance]], lease_pages: dict[int, int] | None
 ) -> None:
     """Send each property's lease chip to that property's lease page.
 
@@ -381,12 +402,15 @@ def _point_lease_chips_at_their_page(
     """
     if not lease_pages:
         return
-    landing = {
-        page.record_index: number
-        for number, (_, page) in enumerate(pages)
-        if page.record_index is not None
-        and page.template_page_index in lease_pages
-    }
+    landing: dict[int, int] = {}
+    for number, (_, page) in enumerate(pages):
+        if page.record_index is None:
+            continue
+        if page.template_page_index not in lease_pages:
+            continue
+        # The first of them. A property with more leases than one page holds now
+        # has several, and the chip leads to where its table starts.
+        landing.setdefault(page.record_index, number)
     for _, page in pages:
         destination = landing.get(page.record_index)
         if destination is not None:
@@ -397,8 +421,18 @@ def _point_lease_chips_at_their_page(
             page.values[f"{GOTO_PREFIX}{RENT_LINK_KEY}"] = destination
 
 
-def page_count_plan(nodes: list[dict[str, Any]], record_rows: set[int]) -> int:
-    """Predicted page count for a plan -- the review step shows this."""
+def page_count_plan(
+    nodes: list[dict[str, Any]],
+    record_rows: set[int],
+    lease_pages: dict[int, int] | None = None,
+) -> int:
+    """Predicted page count for a plan -- the review step shows this.
+
+    ``lease_pages`` says how many contracts each lease page holds, so a property
+    with more of them than one page fits is counted for all the pages it takes.
+    Without it every property counts for one, which is what the plan says and
+    not what the booklet does.
+    """
     lots = sum(
         1
         for n in nodes
@@ -413,7 +447,16 @@ def page_count_plan(nodes: list[dict[str, Any]], record_rows: set[int]) -> int:
             total += 1
         elif kind == LOT:
             if node.get("row") in record_rows:
-                total += len(node.get("pages", []))
+                leases = len(
+                    (node.get("values") or {}).get(LEASE_ROWS_KEY) or []
+                )
+                for page in node.get("pages", []):
+                    per_page = (lease_pages or {}).get(int(page))
+                    total += (
+                        max(1, math.ceil(leases / max(1, int(per_page))))
+                        if per_page
+                        else 1
+                    )
         elif kind == TABLE:
             per_page = max(1, int(node.get("rows_per_page", 1)))
             total += max(1, math.ceil(lots / per_page))

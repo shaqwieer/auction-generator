@@ -324,7 +324,7 @@ def test_the_lease_chip_jumps_to_the_lease_page_on_screen(template_dir):
         pages = compose_plan(
             nodes,
             {0: {"deed_number": "442108021300"}},
-            lease_pages={lease},
+            lease_pages={lease: 19},
         )
         assert [p.template_page_index for p in pages] == [chip.page_index, lease]
 
@@ -378,7 +378,7 @@ def test_the_lease_chip_needs_no_address_to_find_its_page(template_dir):
                 }
             ],
             {0: {"deed_number": "442108021300"}},  # no address typed
-            lease_pages={lease},
+            lease_pages={lease: 19},
         )
         result = PyMuPDFOverlayRenderer().render(
             RenderPlan(

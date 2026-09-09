@@ -79,6 +79,78 @@ class TableColumn:
 
 
 @dataclass
+class FrameItem:
+    """One segment of a drawn shape: a line, or a cubic bezier."""
+
+    #: "l" for a line (two points) or "c" for a cubic bezier (four).
+    kind: str
+    #: x, y pairs in 0..1 of the page, flattened.
+    points: list[float]
+
+
+@dataclass
+class FramePath:
+    """One shape of the line art a table block is ruled with.
+
+    Kept as the designer's own segments rather than as a rectangle. The numbered
+    tab down the edge of «بيان العقارات» is a notched tab with bezier corners,
+    and a table that shrank by redrawing it as a box would lose the notch and
+    stop being the design.
+    """
+
+    items: list[FrameItem]
+    #: The ink as the PDF states it -- three components in 0..1 -- rather than
+    #: the "#RRGGBB" the rest of the manifest speaks. Nothing edits these, and a
+    #: round trip through eight bits a channel does not survive: the tab's teal
+    #: is 0.749 green, which is 190.995 of 255, and the byte it went out as is
+    #: not the byte it came back as. Redrawn a step lighter, the tab reads as a
+    #: patch over the artwork rather than as the artwork.
+    stroke: list[float] | None = None
+    fill: list[float] | None = None
+    width: float = 0.0
+    closed: bool = False
+    #: The row this shape rules off, for the lines drawn once per row: it is
+    #: drawn only while that row exists. ``None`` marks a shape that spans the
+    #: whole block -- a column divider, the tab -- which is shortened instead.
+    row: int | None = None
+
+
+@dataclass
+class TableFrame:
+    """A table block's line art, recorded so its height can follow its rows.
+
+    The designer draws ten rows because a page has to be drawn for something,
+    not because every auction sells ten properties. Printing four leaves six
+    ruled empty rows and a tab running past the last of them -- «should for
+    empty rows delete it like standard». The frame is therefore lifted off the
+    artwork at build time and redrawn at render time for the rows there
+    actually are: the shapes are the designer's, so a full table is the artwork
+    it always was, and a short one is the same artwork ending sooner.
+
+    Painting over the surplus was the alternative and is not one: a white patch
+    over a coloured ground is a patch, and the guide's page is not white.
+    """
+
+    #: Normalised y of the rule closing each row, in row order. Stored as
+    #: measured rather than as a pitch: the designer's rules sit 26.02pt apart
+    #: except for two 28.56pt steps, and rebuilding them from an average would
+    #: put every rule of a short table in the wrong place.
+    rules: list[float]
+    paths: list[FramePath]
+    #: Normalised y of the block's drawn bottom edge -- what the column dividers
+    #: run to, and what the numbered tab ends just past.
+    #:
+    #: Usually the last row's own rule, and left at zero to say so. Not on «بيان
+    #: عقود الإيجار», where the designer ruled twenty bands and numbered
+    #: nineteen: the tab there is drawn to the twentieth, so the bottom edge
+    #: sits a whole band below the last row a client can fill. Shortening is
+    #: measured from this line, which is what makes a full lease table end under
+    #: its nineteenth row rather than under an unnumbered empty one -- the empty
+    #: row being the thing this is all for.
+    bottom: float = 0.0
+
+
+@dataclass
 class TableSpec:
     """A block of identical rows. A page may carry more than one."""
 
@@ -86,6 +158,9 @@ class TableSpec:
     rows: int              # how many rows this block can hold
     row_pitch: float       # normalised vertical distance between rows
     row_offset: int = 0    # index of the first row of the page slice it draws
+    #: The block's line art, where the build could lift it off the page. Absent
+    #: leaves the table the fixed height the designer drew.
+    frame: TableFrame | None = None
 
     @property
     def capacity(self) -> int:

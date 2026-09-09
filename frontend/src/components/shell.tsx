@@ -167,6 +167,11 @@ export function AppShell({
   const isAdmin = user?.role === "admin";
   const isStaff = isAdmin || user?.role === "operator";
 
+  const [menuOpen, setMenuOpen] = useState(false);
+  // A link in the drawer navigates. Without this the drawer is still covering
+  // the screen it navigated to.
+  useEffect(() => setMenuOpen(false), [pathname]);
+
   // An admin runs the platform, not a booklet: the client screens stay reachable
   // by URL, but they are not the admin's workspace and are not in the sidebar.
   // An operator works in both, so they keep both blocks.
@@ -176,10 +181,15 @@ export function AppShell({
   const active = activeHref([...clientItems, ...adminItems], pathname);
   const isActive = (href: string): boolean => href === active;
 
-  return (
-    <div className="flex min-h-screen bg-paper">
-      <aside className="sticky top-0 hidden h-screen w-[248px] shrink-0 flex-col overflow-y-auto bg-ink py-5 text-white md:flex">
-        <div className="border-b border-white/10 px-5 pb-5">
+  /*
+    The same rail, in two places. Below `md` it is not a column beside the work
+    but a drawer over it — the screen is too narrow to give a quarter of it away
+    permanently, and hiding it with nothing in its place left a phone with no
+    way to leave the page it was on and no way to sign out.
+  */
+  const sidebar = (
+    <>
+      <div className="border-b border-white/10 px-5 pb-5">
           <div className="flex items-center gap-2.5">
             <span
               aria-hidden
@@ -270,14 +280,47 @@ export function AppShell({
             تسجيل الخروج
           </button>
         </div>
+    </>
+  );
+
+  return (
+    <div className="flex min-h-screen bg-paper">
+      <aside className="sticky top-0 hidden h-screen w-[248px] shrink-0 flex-col overflow-y-auto bg-ink py-5 text-white md:flex">
+        {sidebar}
       </aside>
 
+      {menuOpen ? (
+        <div className="fixed inset-0 z-40 md:hidden">
+          <button
+            type="button"
+            aria-label="إغلاق القائمة"
+            onClick={() => setMenuOpen(false)}
+            className="absolute inset-0 bg-ink/60"
+          />
+          {/* `start` is the right under RTL, which is the side the rail is on. */}
+          <aside className="absolute inset-y-0 start-0 flex w-[248px] flex-col overflow-y-auto bg-ink py-5 text-white">
+            {sidebar}
+          </aside>
+        </div>
+      ) : null}
+
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-10 flex min-h-[60px] flex-wrap items-center justify-between gap-3 border-b border-line bg-paper/95 px-6 py-3 backdrop-blur">
-          <div className="text-base text-muted">{breadcrumb}</div>
+        <header className="sticky top-0 z-10 flex min-h-[60px] flex-wrap items-center justify-between gap-3 border-b border-line bg-paper/95 px-4 py-3 backdrop-blur md:px-6">
+          <div className="flex min-w-0 items-center gap-3">
+            <button
+              type="button"
+              aria-label="القائمة"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen(true)}
+              className="grid h-9 w-9 shrink-0 place-items-center border border-line text-muted md:hidden"
+            >
+              <span aria-hidden>☰</span>
+            </button>
+            <div className="min-w-0 text-base text-muted">{breadcrumb}</div>
+          </div>
           {action}
         </header>
-        <main className="flex-1 px-6 py-6">{children}</main>
+        <main className="flex-1 px-4 py-6 md:px-6">{children}</main>
       </div>
     </div>
   );

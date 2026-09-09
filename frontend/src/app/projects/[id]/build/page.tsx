@@ -25,6 +25,7 @@ import {
   PageEditor,
   PhotoSlot,
   askable,
+  inReadingOrder,
   photoFields,
   sectioned,
 } from "@/components/builder/PageEditor";
@@ -77,6 +78,17 @@ function Build() {
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [importing, setImporting] = useState(false);
+  /**
+   * Whether the booklet's page list is open. Narrow screens only.
+   *
+   * On a wide screen the list is a column of its own and is always there. On a
+   * phone the three regions stack, and the list is the first of them: a booklet
+   * of twenty-three pages put every one of them between the top of the screen
+   * and the page being filled in, so reaching the form meant scrolling past the
+   * whole booklet. Closed by default, it becomes what it is on the wide screen
+   * — a way to get to another page — rather than the thing in the way.
+   */
+  const [stripOpen, setStripOpen] = useState(false);
   const excel = useRef<HTMLInputElement>(null);
   /**
    * What the client has typed and the server has not yet acknowledged, by key.
@@ -278,7 +290,16 @@ function Build() {
     leaving.current = node?.id ?? null;
   }, [node?.id, send]);
 
-  const fields = shownPage === null ? [] : (plan?.fields_by_page[String(shownPage)] ?? []);
+  // Sorted once, here, because every list on the panel derives from this one --
+  // الحقول, the photographs and the section boxes all read in the same order as
+  // the page beside them.
+  const fields = useMemo(
+    () =>
+      shownPage === null
+        ? []
+        : inReadingOrder(plan?.fields_by_page[String(shownPage)] ?? []),
+    [shownPage, plan],
+  );
 
   // Values for the selected page: a property's live on its record, everything
   // else on the node it was typed onto.
@@ -706,6 +727,71 @@ function Build() {
     });
   }
 
+  /*
+    Paper or screen, asked on the page that shows the difference.
+
+    The same chip is a QR code on paper and a clickable box on screen, and which
+    one is drawn is a property of the booklet, not of the page. It used to be
+    asked for only on المراجعة, one screen later — so a booklet built for an
+    electronic auction sat here showing printed codes, and nothing on this
+    screen said why or what to do about it. The auction being electronic and the
+    booklet being read on a screen are two different facts; this is the second
+    one, and it is asked where its effect is visible.
+  */
+  if (node && fields.some((f) => f.type === "link" || f.type === "qr")) {
+    panels.push({
+      id: "flavour",
+      label: "صيغة المخرجات",
+      body: (
+        <>
+          <div className="grid gap-2 p-4">
+            {(
+              [
+                {
+                  value: "print",
+                  title: "للطباعة",
+                  hint: "يُطبع رمز QR يُمسح بالجوال.",
+                },
+                {
+                  value: "electronic",
+                  title: "إلكتروني",
+                  hint: "يظهر الرابط كمربّع قابل للنقر داخل ملف PDF.",
+                },
+              ] as const
+            ).map((choice) => (
+              <button
+                key={choice.value}
+                type="button"
+                disabled={busy}
+                onClick={() =>
+                  void run(async () => {
+                    await api.updateProject(id, {
+                      output_flavour: choice.value,
+                    });
+                    await load();
+                  })
+                }
+                className={`border p-3 text-start transition-colors ${
+                  project.output_flavour === choice.value
+                    ? "border-accent bg-[#FCE8F2]"
+                    : "border-line hover:border-edge"
+                }`}
+              >
+                <span className="block text-sm font-medium">{choice.title}</span>
+                <span className="mt-1 block text-xs text-muted-soft">
+                  {choice.hint}
+                </span>
+              </button>
+            ))}
+          </div>
+          <p className="border-t border-line px-4 py-3 text-xs text-muted-soft">
+            الاختيار يسري على الكتيّب كله، ويظهر أثره في الصفحة المعروضة فورًا.
+          </p>
+        </>
+      ),
+    });
+  }
+
   return (
     <AppShell
       breadcrumb={`${project.name} · الخطوة 2 من 3`}
@@ -759,36 +845,74 @@ function Build() {
       <div className="mt-5 grid gap-5 xl:grid-cols-[260px_1fr_320px] [@media(min-width:1600px)]:grid-cols-[260px_1fr_440px]">
         {/* The booklet, in order. */}
         <section className="space-y-3">
-          <PanelHeader
-            title="صفحات الكتيّب"
-            meta={`${plan.predicted_pages} صفحة`}
-          />
-          <PageStrip
-            entries={entries}
-            active={active}
-            busy={busy}
-            onSelect={setActive}
-            onDuplicate={(nodeId) =>
-              void run(async () => {
-                setPlan(await api.duplicateNode(id, nodeId, plan.revision));
-              })
-            }
-            onMove={(nodeId, delta) =>
-              void run(async () => {
-                setPlan(await api.moveNode(id, nodeId, delta, plan.revision));
-              })
-            }
-            onSetEnabled={(nodeId, on) =>
-              void run(async () => {
-                setPlan(
-                  await api.setNodeEnabled(id, nodeId, {
-                    on,
-                    revision: plan.revision,
-                  }),
-                );
-              })
-            }
-          />
+          <div className="hidden xl:block">
+            <PanelHeader
+              title="صفحات الكتيّب"
+              meta={`${plan.predicted_pages} صفحة`}
+            />
+          </div>
+
+          {/*
+            The same list, reached rather than scrolled past. It names the page
+            being filled in, so closed it still answers "where am I".
+          */}
+          <button
+            type="button"
+            aria-expanded={stripOpen}
+            onClick={() => setStripOpen((open) => !open)}
+            className="flex w-full items-center justify-between gap-3 border border-line bg-surface px-4 py-3 text-start xl:hidden"
+          >
+            <span className="min-w-0">
+              <span className="block text-[11px] text-muted-soft">
+                صفحات الكتيّب ·{" "}
+                <Mono>
+                  <span>{plan.predicted_pages}</span>
+                </Mono>{" "}
+                صفحة
+              </span>
+              <span className="mt-0.5 block truncate text-sm font-medium">
+                {entries.find((e) => e.node.id === active)?.title ??
+                  "اختر صفحة"}
+              </span>
+            </span>
+            <span aria-hidden className="shrink-0 text-muted-soft">
+              {stripOpen ? "▲" : "▼"}
+            </span>
+          </button>
+
+          <div className={stripOpen ? "" : "hidden xl:block"}>
+            <PageStrip
+              entries={entries}
+              active={active}
+              busy={busy}
+              onSelect={(nodeId) => {
+                setActive(nodeId);
+                // Picking a page on a phone is the end of using the list.
+                setStripOpen(false);
+              }}
+              onDuplicate={(nodeId) =>
+                void run(async () => {
+                  setPlan(await api.duplicateNode(id, nodeId, plan.revision));
+                })
+              }
+              onMove={(nodeId, delta) =>
+                void run(async () => {
+                  setPlan(await api.moveNode(id, nodeId, delta, plan.revision));
+                })
+              }
+              onSetEnabled={(nodeId, on) =>
+                void run(async () => {
+                  setPlan(
+                    await api.setNodeEnabled(id, nodeId, {
+                      on,
+                      revision: plan.revision,
+                    }),
+                  );
+                })
+              }
+            />
+          </div>
+
           <button
             type="button"
             // The first property is the whole job on an empty booklet, so it
@@ -868,6 +992,7 @@ function Build() {
                     // The field being typed into is left off the page, so the
                     // box on top is the only place its value appears.
                     omit: focused ?? undefined,
+                    flavour: project.output_flavour,
                   })}
                   alt={entries.find((e) => e.node.id === node.id)?.title ?? ""}
                   pageWidth={template.page_width}

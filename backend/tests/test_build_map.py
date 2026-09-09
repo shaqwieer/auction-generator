@@ -14,6 +14,7 @@ design. Both must pass at once.
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import unicodedata
@@ -65,15 +66,37 @@ PRINTED_LABELS = [
 ]
 
 
-def _source_for(pages: int) -> Path | None:
+def _source_for(pages: int, name: str = "") -> Path | None:
+    """The export a map describes: named, then confirmed by page count.
+
+    Two of the three exports have sixteen pages now, so counting alone matched
+    whichever sorted first and checked a map against the wrong booklet.
+    """
+    from tests.conftest import _plain
+
+    wanted = _plain(name)
     for root in (BACKEND.parent / "references", BACKEND.parent):
         for candidate in sorted(root.glob("*.pdf")):
+            if wanted and wanted not in _plain(candidate.stem):
+                continue
             try:
                 with fitz.open(candidate) as doc:
                     if doc.page_count == pages:
                         return candidate
             except Exception:
                 continue
+    return None
+
+
+def _any_named(name: str) -> Path | None:
+    """An export by name alone, for one a map grafts but does not size."""
+    from tests.conftest import _plain
+
+    wanted = _plain(name)
+    for root in (BACKEND.parent / "references", BACKEND.parent):
+        for candidate in sorted(root.glob("*.pdf")):
+            if wanted and wanted in _plain(candidate.stem):
+                return candidate
     return None
 
 
@@ -105,11 +128,23 @@ def test_pagemap_markers_match_the_export():
     """
     checked = 0
     for source_map in MAPS:
-        source = _source_for(source_map.source_pages)
+        source = _source_for(source_map.source_pages, source_map.source)
         if source is None:
             continue
-        with fitz.open(source) as doc:
-            assert_map(doc, source_map)
+        # A map that grafts pages is checked against every export it draws on:
+        # the grafted page's markers belong to the file it actually comes from.
+        extra = {}
+        for name in source_map.extra_sources:
+            path = _source_for(0, name) or _any_named(name)
+            if path is None:
+                pytest.skip(f"export {name!r} not available")
+            extra[name] = fitz.open(path)
+        try:
+            with fitz.open(source) as doc:
+                assert_map(doc, source_map, extra)
+        finally:
+            for book in extra.values():
+                book.close()
         checked += 1
     if not checked:
         pytest.skip("designer's exports not available")
@@ -118,7 +153,7 @@ def test_pagemap_markers_match_the_export():
 def test_a_shifted_map_is_rejected():
     """assert_map is the tripwire for a re-export that renumbers its pages."""
     source_map = MAPS[0]
-    source = _source_for(source_map.source_pages)
+    source = _source_for(source_map.source_pages, source_map.source)
     if source is None:
         pytest.skip("designer's exports not available")
     with fitz.open(source) as doc:
@@ -133,28 +168,62 @@ def test_each_variant_offers_both_lot_layouts():
         assert set(layouts) == {"standard", "tower"}, source_map.slug
 
 
-def test_the_electronic_cut_is_the_one_with_the_closing_chip():
-    """The three variants must not collapse into each other.
+def test_the_closing_chip_follows_electronic_bidding():
+    """Whoever can bid online is told when bidding closes.
 
-    The hybrid export carries both halves. Electronic takes the lot pages that
-    print a closing time; hybrid takes the ones that do not, because its bidding
-    closes live in the hall.
+    The hybrid export carries both halves of the property page: one drawn with
+    «تغلق المزايدة على العقار» and its time and date, one drawn without. The
+    electronic booklet takes the first. So does the hybrid booklet, and that is
+    the point of the pair — a hybrid auction accepts online bids, so a bidder
+    reading it needs the closing time exactly as an electronic bidder does.
+
+    This reverses the earlier reading, which gave hybrid the half without the
+    chip on the grounds that its bidding closes live in the hall. That is true
+    of the hall; it is not true of the platform the same auction is also run on,
+    and the booklet is read by both. Only the حضوري export, which never draws
+    the chip at all, is without it.
     """
     electronic = BY_SLUG["auction_infath_electronic"].lot_layouts()
     hybrid = BY_SLUG["auction_infath_hybrid"].lot_layouts()
-    assert electronic["standard"].index != hybrid["standard"].index
-    assert electronic["tower"].index != hybrid["tower"].index
+    inperson = BY_SLUG["auction_infath_inperson"].lot_layouts()
+
     assert all("تغلق المزايدة" in p.expect for p in electronic.values())
-    assert all("تغلق المزايدة" in p.forbid for p in hybrid.values())
+    assert all("تغلق المزايدة" in p.expect for p in hybrid.values())
+    assert all("تغلق المزايدة" in p.forbid for p in inperson.values())
+
+    # The two that share a source share its pages; the حضوري export is its own.
+    assert electronic["standard"].index == hybrid["standard"].index
+    assert electronic["tower"].index == hybrid["tower"].index
 
 
-def test_borrowed_pages_are_recorded_not_hidden():
-    """The two pages the electronic booklet has no artwork for are flagged."""
-    borrowed = [
-        p for p in BY_SLUG["auction_infath_electronic"].pages if p.needs_artwork
-    ]
-    assert {p.role for p in borrowed} == {PageRole.AUCTION_INFO, PageRole.TERMS}
-    assert not [p for p in BY_SLUG["auction_infath_hybrid"].pages if p.needs_artwork]
+def test_nothing_is_borrowed_now_that_the_electronic_export_exists():
+    """The three pages that were the hybrid's are cut from their own file.
+
+    ``needs_artwork`` was on معلومات المزاد and شروط الدخول while the electronic
+    booklet had no export of its own; معلومات التواصل was the hybrid's without
+    even being flagged. All three now come from the electronic export, so no
+    page of any map is borrowed, and the flag is free to mean what it says the
+    next time a variant is short of artwork.
+    """
+    for source_map in MAPS:
+        borrowed = [p for p in source_map.pages if p.needs_artwork]
+        assert not borrowed, (
+            f"{source_map.slug} still borrows "
+            f"{[p.role.value for p in borrowed]}"
+        )
+
+
+def test_the_electronic_pages_come_from_the_electronic_export():
+    """And the rest of it still comes from the hybrid: it has no برج layout."""
+    electronic = BY_SLUG["auction_infath_electronic"]
+    grafted = {p.role for p in electronic.pages if p.source}
+    assert grafted == {PageRole.AUCTION_INFO, PageRole.TERMS, PageRole.CONTACT}
+    assert electronic.extra_sources == ("مزاد الكتروني",)
+    # Every grafted page states where that export prints the agent's lockup;
+    # nothing else finds it, so a page without one would print يازي's mark.
+    for page in electronic.pages:
+        if page.source:
+            assert page.agent_mark, f"{page.role.value} states no agent mark"
 
 
 # ----------------------------------------------------------------- the build
@@ -423,6 +492,105 @@ def test_the_declared_names_land_on_the_runs_they_describe(built):
         )
 
 
+def test_every_table_is_ruled_by_the_field_not_the_artwork(built):
+    """Every colourway of both tables carries its own ruling, and none wears it.
+
+    A table that shrinks has to be drawn, not painted over: the guide's page is
+    coloured, so a white patch over the surplus rows would be a patch. The build
+    lifts the rules, the column dividers and the numbered tab off the artwork
+    and hands them to the field, which redraws as many as the auction needs.
+
+    Both halves are checked here because either alone is a booklet that prints
+    wrong. Captured but not erased, the redraw lands on top of the original and
+    every line comes out a third too dark; erased but not captured, the page
+    loses its table altogether.
+    """
+    pages = {p["page_index"]: p for p in built["pages"]}
+    tables = [
+        f
+        for f in built["fields"]
+        if f.get("table")
+        and pages.get(f["page_index"], {}).get("role") in ("lot_table", "rent_table")
+    ]
+    assert tables, "the booklet has a table page in at least one colour"
+    # Both tables, in both colours: four blocks, none of them borrowing
+    # another's geometry. «بيان عقود الإيجار» is nine columns wider than «بيان
+    # العقارات» and nineteen rows deep to its ten, so a frame copied from one to
+    # the other would rule the wrong page in the wrong places.
+    seen = {
+        (pages[f["page_index"]]["role"], pages[f["page_index"]]["layout"])
+        for f in tables
+    }
+    assert len(seen) == len(tables), f"a colourway is described twice: {seen}"
+
+    with fitz.open(built["_dir"] / "background.pdf") as doc:
+        for field in tables:
+            frame = field["table"]["frame"]
+            assert frame, f"{field['key']} must carry the ruling it was drawn with"
+            rules = frame["rules"]
+            assert len(rules) == field["table"]["rows"], (
+                "one rule closes each row the block can hold"
+            )
+            bottom = frame["bottom"]
+            assert bottom >= rules[-1], "the block ends at or below its last row"
+            if pages[field["page_index"]]["role"] == "rent_table":
+                # The lease artwork rules twenty bands and numbers nineteen, so
+                # its drawn bottom edge is a whole band below the last row a
+                # client can fill. That band is not redrawn -- it is an empty
+                # row, which is the thing this work exists to remove.
+                pitch = field["table"]["row_pitch"]
+                assert bottom - rules[-1] == pytest.approx(pitch, rel=0.1), (
+                    "the lease block's bottom edge is one unnumbered band below "
+                    "its last row"
+                )
+            assert rules == sorted(rules), "the rules are held in row order"
+            # Held as measured, not as a pitch: the designer's steps are not all
+            # the same, and a block rebuilt from an average rules the wrong
+            # places.
+            steps = {round(b - a, 4) for a, b in itertools.pairwise(rules)}
+            assert len(steps) > 1, (
+                "the measured rules are not evenly spaced; storing them "
+                "individually is the point"
+            )
+
+            page = doc[field["page_index"]]
+            height = page.rect.height
+            top, bottom = rules[0] * height, frame["bottom"] * height
+            left = min(
+                v for path in frame["paths"] for item in path["items"]
+                for v in item["points"][::2]
+            ) * page.rect.width
+            surviving = [
+                fitz.Rect(d["rect"])
+                for d in page.get_drawings()
+                if fitz.Rect(d["rect"]).y0 >= top - 1
+                and fitz.Rect(d["rect"]).y1 <= bottom + 20
+                and fitz.Rect(d["rect"]).x1 >= left - 1
+            ]
+            assert not surviving, (
+                f"page {field['page_index']} still has its table ruled into the "
+                f"artwork: {[tuple(round(v, 2) for v in r) for r in surviving]}"
+            )
+
+            # The header bar carries the column titles as outlines and is not
+            # part of what shrinks, so it must still be there.
+            header = [
+                d
+                for d in page.get_drawings()
+                if fitz.Rect(d["rect"]).y1 <= top
+                and fitz.Rect(d["rect"]).y1 > top - 3 * height * field["table"]["row_pitch"]
+                and fitz.Rect(d["rect"]).width > 300
+            ]
+            assert header, (
+                f"page {field['page_index']} lost the bar above its table"
+            )
+
+    roles = {pages[f["page_index"]]["role"] for f in tables}
+    assert roles == {"lot_table", "rent_table"}, (
+        f"both tables shrink to their rows, not just one: {roles}"
+    )
+
+
 def test_a_table_page_is_named_for_itself_not_for_its_colour(built):
     """Both colourways are the same page of the booklet.
 
@@ -511,3 +679,115 @@ def test_a_section_box_is_the_drawn_box_not_the_words_in_it(built):
                 f"{built['slug']} page {field['page_index']} ({field['key']}): "
                 f"{box} does not fill any box the designer drew"
             )
+
+
+# ------------------------------------------- the grafted electronic pages
+
+#: Everything on the electronic export that belongs to شركة يازي's real sale
+#: rather than to the template. None of it may survive into the built artwork.
+YAZI_SALE = [
+    "يازي",             # the selling agent, in Arabic
+    "Yazi",             # and in Latin, as the lockup sets it
+    "أصالة حفر الباطن",  # the auction's name
+    "حفر الباطن",
+    "الخفجي",           # the city its lots are in
+    "منصة مباشر",       # the platform it was held on
+    "0553157070",       # the agent's telephone number
+    "732505003750",     # one of its deed numbers
+]
+
+#: Copy on those same pages that is the design and must be left alone.
+ELECTRONIC_DESIGN = {
+    PageRole.TERMS: ["التسجيل في منصة المزاد الإلكتروني", "مركز الإسناد"],
+    PageRole.CONTACT: ["يقام المزاد إلكترونيا", "للتواصل والاستفسار"],
+}
+
+
+def _electronic_pages(manifest: dict, role: PageRole) -> list[int]:
+    return [p["page_index"] for p in manifest["pages"] if p["role"] == role.value]
+
+
+@pytest.fixture(scope="module")
+def electronic() -> dict:
+    directory = BUILT / "auction_infath_electronic"
+    if not (directory / "template.json").exists():
+        pytest.skip("electronic template not built")
+    manifest = json.loads((directory / "template.json").read_text(encoding="utf-8"))
+    manifest["_dir"] = directory
+    return manifest
+
+
+def test_no_yazi_branding_or_sample_sale_survives(electronic):
+    """The electronic pages are cut from a finished auction, not a template.
+
+    Its artwork is the design we want; everything printed on it belongs to
+    somebody else's sale, including the selling agent's own lockup — which no
+    automatic sweep finds, so the map states where it is and the build clears
+    the stated region. A booklet carrying one client's mark onto another
+    client's pages is the failure this guards.
+    """
+    offenders: list[str] = []
+    with fitz.open(electronic["_dir"] / "background.pdf") as doc:
+        for index, page in enumerate(doc):
+            text = fold(normalise(page.get_text()))
+            for phrase in YAZI_SALE:
+                if fold(normalise(phrase)) in text:
+                    offenders.append(f"page {index}: {phrase!r}")
+    assert not offenders, "the real sale survived into the artwork: " + "; ".join(
+        offenders
+    )
+
+
+def test_the_grafted_pages_keep_their_own_design(electronic):
+    """Clearing harder is not the answer: the legal copy is the deliverable.
+
+    شروط الدخول is fixed wording that differs per auction type, carries no
+    field, and is the reason the electronic export was wanted at all. If a
+    future widening of the bake removes it, the page comes out blank and the
+    booklet loses its terms.
+    """
+    with fitz.open(electronic["_dir"] / "background.pdf") as doc:
+        for role, phrases in ELECTRONIC_DESIGN.items():
+            for index in _electronic_pages(electronic, role):
+                text = fold(normalise(doc[index].get_text()))
+                for phrase in phrases:
+                    assert fold(normalise(phrase)) in text, (
+                        f"{role.value} page {index} lost its own copy: {phrase!r}"
+                    )
+
+
+def test_the_electronic_variant_names_a_platform_and_no_venue(electronic):
+    """An electronic auction is held nowhere, so it has no location to print."""
+    keys = {
+        (f["page_index"], f["key"])
+        for f in electronic["fields"]
+    }
+    for role in (PageRole.AUCTION_INFO, PageRole.CONTACT):
+        for index in _electronic_pages(electronic, role):
+            on_page = {key for page, key in keys if page == index}
+            assert "location" not in on_page, f"{role.value} still asks for a venue"
+            assert "platform_name" in on_page, f"{role.value} names no platform"
+
+    # And no code leading to a hall that does not exist.
+    for index in _electronic_pages(electronic, PageRole.CONTACT):
+        on_page = {key for page, key in keys if page == index}
+        assert not [k for k in on_page if "venue" in k], "a hall code survived"
+
+
+def test_grafted_pages_carry_the_company_mark(electronic):
+    """Where the agent's lockup was, the signed-in company's goes.
+
+    Removing it is only half the job: the page would otherwise print no mark at
+    all where the design has one.
+    """
+    grafted = [
+        p["page_index"]
+        for p in electronic["pages"]
+        if p["role"] in (PageRole.AUCTION_INFO.value, PageRole.TERMS.value,
+                         PageRole.CONTACT.value)
+    ]
+    logos = {
+        f["page_index"] for f in electronic["fields"] if f["key"] == "company_logo"
+    }
+    missing = [i for i in grafted if i not in logos]
+    assert not missing, f"no company mark on grafted pages {missing}"

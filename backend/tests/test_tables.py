@@ -216,8 +216,8 @@ def test_overflow_beyond_capacity_is_reported(template_dir):
     assert any("جدول" in w.cause for w in warnings)
 
 
-def test_fewer_records_than_rows_leaves_the_rest_blank(template_dir):
-    """Three lots print three rows; the rest of the block stays empty."""
+def test_fewer_records_than_rows_prints_only_those_rows(template_dir):
+    """Three lots print three rows, and there is no fourth."""
     records = lots(3)
     with manifest.load(template_dir) as template:
         result, pages = render(template, records)
@@ -231,3 +231,297 @@ def test_fewer_records_than_rows_leaves_the_rest_blank(template_dir):
     printed = [n for n in ("01", "02", "03", "04", "05") if n in text]
     assert printed == ["01", "02", "03"], f"unexpected row indices: {printed}"
     assert "\x00" not in text
+
+
+# --------------------------------------------------------------------------
+# A block as tall as the auction is long
+
+
+#: «بيان عقود الإيجار» in the built template. Its own page, its own columns --
+#: ten to the summary table's nine -- and nineteen rows to its ten.
+LEASE_PAGE = 11
+
+
+def table_field(template, page_index: int = TABLE_PAGE):
+    return next(
+        f
+        for f in template.fields
+        if f.page_index == page_index
+        and f.type is FieldType.TABLE
+        and f.table is not None
+    )
+
+
+def block_ink(page, field, height: float, width: float) -> list[fitz.Rect]:
+    """Every shape drawn in the band the table's own block occupies.
+
+    Grown from the field rect rather than stated in points, so the page's
+    heading above it and the Infath mark in its footer stay out of scope
+    however the artwork is revised. The margins are a row's worth either way:
+    the numbered tab starts a little above the first rule and hangs a little
+    below the last, and both are part of the block.
+    """
+    margin = field.table.row_pitch * height
+    band = fitz.Rect(
+        0.0,
+        field.rect.y * height - margin,
+        width,
+        (field.rect.y + field.rect.h) * height + margin,
+    )
+    out = []
+    for drawing in page.get_drawings():
+        rect = fitz.Rect(drawing["rect"])
+        rect.normalize()
+        if rect.y0 >= band.y0 and rect.y1 <= band.y1:
+            out.append(rect)
+    return out
+
+
+def rendered_summary(template, count: int):
+    result, pages = render(template, lots(count))
+    index = next(i for i, p in enumerate(pages) if "__rows__" in p.values)
+    return result, index
+
+
+def test_the_block_is_ruled_for_the_rows_there_are(template_dir):
+    """No empty rows: a table of four properties is ruled four rows deep.
+
+    The artwork ships ruled for ten because a printed page has to be drawn for
+    some number. Ten rows for four properties left six ruled empties and a
+    numbered tab running past all of them, which reads as a table that failed
+    to fill in rather than as an auction with four lots in it.
+    """
+    with manifest.load(template_dir) as template:
+        field = table_field(template)
+        frame = field.table.frame
+        assert frame is not None, "the summary table must carry its own ruling"
+        page_rect = template.background[TABLE_PAGE].rect
+        height, width = page_rect.height, page_rect.width
+        assert len(frame.rules) == field.table.rows, (
+            "one rule closes each row the block can hold"
+        )
+
+        for count in (1, 3, 7, field.table.rows):
+            result, index = rendered_summary(template, count)
+            with fitz.open("pdf", result.pdf) as out:
+                shapes = block_ink(out[index], field, height, width)
+            ruled = sorted(
+                round(r.y0, 1) for r in shapes if r.height <= 1.0 and r.width > 100
+            )
+            expected = sorted(round(y * height, 1) for y in frame.rules[:count])
+            assert ruled == expected, (
+                f"{count} properties should be ruled off by {count} lines"
+            )
+
+
+def test_the_tab_and_the_dividers_stop_at_the_last_row(template_dir):
+    """The whole block shortens, not just its rules.
+
+    The numbered tab, the column dividers and the rules are one piece of
+    artwork. Shortening the rules alone would leave the tab hanging below the
+    table, which is the empty-row problem drawn a different way.
+    """
+    with manifest.load(template_dir) as template:
+        field = table_field(template)
+        frame = field.table.frame
+        page_rect = template.background[TABLE_PAGE].rect
+        height, width = page_rect.height, page_rect.width
+        full = field.table.rows
+
+        depths = {}
+        for count in (2, 5, full):
+            result, index = rendered_summary(template, count)
+            with fitz.open("pdf", result.pdf) as out:
+                shapes = block_ink(out[index], field, height, width)
+            depths[count] = max(r.y1 for r in shapes)
+
+        for count in (2, 5):
+            lost = (frame.rules[full - 1] - frame.rules[count - 1]) * height
+            assert depths[count] == pytest.approx(depths[full] - lost, abs=0.05), (
+                f"the block should end {lost:.1f}pt higher with {count} rows"
+            )
+
+
+def test_a_full_table_is_the_ruling_the_designer_drew(template_dir):
+    """At capacity the redraw must be the artwork it was lifted from.
+
+    This is the check that makes every shorter table trustworthy: the geometry
+    is translated, never rebuilt, so if ten rows land where the designer drew
+    them then four do too. It failed twice while it was being written -- once
+    because the ink went through eight bits a channel and came back a step
+    lighter, once because the rules had never been taken off the artwork and
+    were being redrawn on top of themselves.
+    """
+    with manifest.load(template_dir) as template:
+        field = table_field(template)
+        frame = field.table.frame
+        page_rect = template.background[TABLE_PAGE].rect
+        height, width = page_rect.height, page_rect.width
+
+        result, index = rendered_summary(template, field.table.rows)
+        with fitz.open("pdf", result.pdf) as out:
+            drawn = block_ink(out[index], field, height, width)
+
+    def corners(path):
+        xs = [v for item in path.items for v in item.points[::2]]
+        ys = [v for item in path.items for v in item.points[1::2]]
+        return (
+            round(min(xs) * width, 1), round(min(ys) * height, 1),
+            round(max(xs) * width, 1), round(max(ys) * height, 1),
+        )
+
+    want = sorted(corners(p) for p in frame.paths)
+    got = sorted(
+        (round(r.x0, 1), round(r.y0, 1), round(r.x1, 1), round(r.y1, 1))
+        for r in drawn
+    )
+    assert got == want, "a full block is drawn exactly where the artwork had it"
+
+
+def test_a_fact_nobody_supplied_is_a_dash_in_a_row_that_exists(template_dir):
+    """«في حال تعذر وجود معلومة يمكن إضافة (-) فقط دون حذف العمود».
+
+    A row in the block is a property that exists, so an empty cell is a fact
+    not supplied rather than a row to be removed. Left blank, a row with three
+    gaps in it read as a table that had failed to render.
+    """
+    records = lots(2)
+    records[0]["district"] = ""
+    del records[1]["plan_number"]
+
+    with manifest.load(template_dir) as template:
+        pages = compose(template.sections, records)
+        index = next(i for i, p in enumerate(pages) if "__rows__" in p.values)
+        plan = RenderPlan(
+            background=template.background,
+            fields=template.fields,
+            pages=pages,
+            design_page_height=template.design_page_height,
+        )
+        result = PyMuPDFOverlayRenderer().render(plan)
+
+    with fitz.open("pdf", result.pdf) as out:
+        text = out[index].get_text()
+    assert text.count("-") >= 2, "each missing fact prints a hyphen of its own"
+    assert "01" in text and "02" in text, "both rows are still printed"
+
+
+def test_the_lease_table_shrinks_to_its_leases_too(template_dir):
+    """«بيان عقود الإيجار» is the same promise on a different page.
+
+    Different in every way that matters to the measuring: ten columns rather
+    than nine, nineteen rows rather than ten, headers converted to outlines so
+    the block is found from its printed row numbers instead, and a designer who
+    ruled twenty bands and numbered nineteen. None of that changes what the
+    client sees -- a table of three leases is ruled three rows deep.
+    """
+    with manifest.load(template_dir) as template:
+        field = table_field(template, LEASE_PAGE)
+        frame = field.table.frame
+        assert frame is not None, "the lease table must carry its own ruling"
+        assert len(frame.rules) == field.table.rows == 19
+        page_rect = template.background[LEASE_PAGE].rect
+        height = page_rect.height
+
+        # The unnumbered twentieth band: drawn by the designer, below every row
+        # a client can fill, and never redrawn.
+        pitch = field.table.row_pitch
+        assert frame.bottom - frame.rules[-1] == pytest.approx(pitch, rel=0.1)
+        assert not any(
+            p.row is not None and p.row >= field.table.rows for p in frame.paths
+        )
+
+        renderer = PyMuPDFOverlayRenderer()
+        for count in (1, 3, 12, field.table.rows):
+            doc = fitz.open()
+            doc.insert_pdf(template.background, from_page=LEASE_PAGE, to_page=LEASE_PAGE)
+            drawn_page = doc[0]
+            renderer._draw_frame(drawn_page, field.table, count)
+            shapes = block_ink(drawn_page, field, height, page_rect.width)
+            ruled = sorted(
+                round(r.y0, 1) for r in shapes if r.height <= 1.0 and r.width > 100
+            )
+            assert ruled == sorted(
+                round(y * height, 1) for y in frame.rules[:count]
+            ), f"{count} leases should be ruled off by {count} lines"
+            # And the block ends there: nothing hangs below the last rule but
+            # the tab's own rounded corner.
+            deepest = max(r.y1 for r in shapes)
+            last = frame.rules[count - 1] * height
+            assert 0 <= deepest - last < pitch * height, (
+                f"the lease block runs {deepest - last:.1f}pt past its last row"
+            )
+            doc.close()
+
+
+def ruled_rows(page, field, height: float, width: float) -> int:
+    """How many row rules the renderer actually drew on this page."""
+    shapes = block_ink(page, field, height, width)
+    return len([r for r in shapes if r.height <= 1.0 and r.width > 100])
+
+
+def test_the_summary_overflow_page_is_ruled_for_its_remainder(template_dir):
+    """Thirteen properties: ten on one page, three on the next -- and three
+    ruled rows on the next, not ten with seven empties under them.
+
+    Repeating the artwork is only half the answer. Repeated at full height, an
+    overflow page is a page of empty ruled rows, which is the original problem
+    moved one page along.
+    """
+    with manifest.load(template_dir) as template:
+        field = table_field(template)
+        rect = template.background[TABLE_PAGE].rect
+        result, pages = render(template, lots(13))
+        table_pages = [i for i, p in enumerate(pages) if "__rows__" in p.values]
+        assert len(table_pages) == 2, "thirteen properties need two summary pages"
+        assert [len(pages[i].values["__rows__"]) for i in table_pages] == [10, 3]
+
+        with fitz.open("pdf", result.pdf) as out:
+            first = ruled_rows(out[table_pages[0]], field, rect.height, rect.width)
+            second = ruled_rows(out[table_pages[1]], field, rect.height, rect.width)
+            tail = out[table_pages[1]].get_text()
+    assert (first, second) == (10, 3)
+    for number in ("11", "12", "13"):
+        assert number in tail, f"the overflow page carries on at {number}"
+    assert "14" not in tail
+
+
+def test_the_lease_overflow_page_is_ruled_for_its_remainder(template_dir):
+    """And the same for contracts: nineteen, then six ruled rows numbered 20-25."""
+    from app.rendering.compose import compose_plan_indexed
+
+    nodes = [{
+        "id": "lot0", "kind": "lot", "row": 0, "pages": [LEASE_PAGE],
+        "layout": "standard", "options": ["rent_table"],
+        "values": {"__lease__": [
+            {"lease_unit_number": str(i + 1), "lease_status": "جاري"}
+            for i in range(25)
+        ]},
+    }]
+    with manifest.load(template_dir) as template:
+        field = table_field(template, LEASE_PAGE)
+        rect = template.background[LEASE_PAGE].rect
+        pages = [
+            p
+            for _, p in compose_plan_indexed(
+                nodes, {0: lots(1)[0]}, lease_pages={LEASE_PAGE: field.table.rows}
+            )
+            if p.template_page_index == LEASE_PAGE
+        ]
+        assert [len(p.values["__rows__"]) for p in pages] == [19, 6]
+
+        plan = RenderPlan(
+            background=template.background,
+            fields=[f for f in template.fields if f.page_index == LEASE_PAGE],
+            pages=pages,
+            design_page_height=template.design_page_height,
+        )
+        result = PyMuPDFOverlayRenderer().render(plan)
+        with fitz.open("pdf", result.pdf) as out:
+            first = ruled_rows(out[0], field, rect.height, rect.width)
+            second = ruled_rows(out[1], field, rect.height, rect.width)
+            tail = out[1].get_text()
+    assert (first, second) == (19, 6)
+    for number in ("20", "25"):
+        assert number in tail, f"the second lease page carries on at {number}"
+    assert "26" not in tail
