@@ -245,6 +245,7 @@ def _field_from(raw: dict) -> FieldSpec:
         ornament=paths_from_json(raw.get("ornament")),
         part=part_from_json(raw.get("part")),
         row_group=raw.get("row_group", ""),
+        two_lines=bool(raw.get("two_lines", False)),
         table=_table_from(raw.get("table")),
     )
 

@@ -176,6 +176,8 @@ class TemplateFieldOut(ORM):
     #: The designer's mark beside this value, and the centred row it sits in.
     ornament: list[dict[str, Any]] | None = None
     row_group: str = ""
+    #: Set on two lines, breaking after the first word.
+    two_lines: bool = False
     #: A cutting of the artwork this field draws back when it is in play.
     part: dict[str, Any] | None = None
     #: Fixed wording printed around the value, and what prints without one.
@@ -306,6 +308,7 @@ class TemplateFieldUpdate(BaseModel):
     clip_holes: list[list[list[float]]] | None = None
     ornament: list[dict[str, Any]] | None = None
     row_group: str = ""
+    two_lines: bool = False
     part: dict[str, Any] | None = None
     prefix: str = ""
     suffix: str = ""

@@ -315,6 +315,11 @@ class TemplateField(Base):
     row_group: Mapped[str] = mapped_column(
         String(40), default="", nullable=False, server_default=""
     )
+    # Set the value on two lines. See FieldSpec.two_lines: the guide asks for
+    # the auction's name on two lines wherever the mark stands to its right.
+    two_lines: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
     origin: Mapped[str] = mapped_column(String(200), default="", nullable=False)
 
     # Fixed wording printed around the value, and what prints when nothing has

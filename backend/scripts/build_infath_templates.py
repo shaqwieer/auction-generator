@@ -166,8 +166,16 @@ RULES: dict[str, list[dict[str, Any]]] = {
         # Whichever is left empty prints what the other was given; untouched,
         # both fall back to the name the project was created with, because a
         # cover with no title on it is worse than a working one.
+        # Two lines, always. «يكون اسم المزاد على سطرين إذا تم إستخدام الأيقونة
+        # يمين الاسم» -- and on every one of the seven covers the mark stands to
+        # the right of the name, so on every one of them the name is set on two
+        # lines. The break goes after the first word, which is how both of the
+        # designer's own samples are set: «مزاد» over «أعيان حائل», «مـزاد» over
+        # «درة البحر». Not a narrower box -- «مزاد أعيان حائل» fits one line in
+        # all seven, and the widest of them gives it half the page again.
         {"key": "auction_title", "label": "اسم المزاد", "match": "#FFFFFF",
-         "index": 0, "fit": Fit.WRAP, "default_value": "{auction_title}"},
+         "index": 0, "fit": Fit.WRAP, "two_lines": True,
+         "default_value": "{auction_title}"},
         # The date only, never the caption above it. On four of the six covers
         # the designer set «تاريخ المزاد» as the first line of this same white
         # run, so a field taking the run whole took the caption with it -- and
@@ -1263,7 +1271,7 @@ def _apply_rules(
         extras = {
             k: v
             for k, v in rule.items()
-            if k in {"align", "fit", "valign", "default_value"}
+            if k in {"align", "fit", "valign", "default_value", "two_lines"}
         }
         spec = _spec_from(
             pool[index], page_rect, rule["key"],
@@ -3232,19 +3240,73 @@ MARK_REACH = 40.0
 #: requirement, and it cannot be met while the icon is ink on the page: the
 #: number was a field and the mark above it was not, so a seller with no
 #: WhatsApp printed a WhatsApp mark with nothing beside it.
-MARKED_CHIPS: dict[str, dict[str, Any]] = {
-    "contact": {
-        "group": "contact_numbers",
-        "keys": ("contact_whatsapp", "contact_phone"),
-    },
-    "contact_electronic": {
-        "group": "contact_numbers",
-        "keys": ("contact_whatsapp", "contact_phone"),
-    },
-    "contact_inperson": {
-        "group": "contact_numbers",
-        "keys": ("contact_whatsapp", "contact_phone"),
-    },
+#: How far above a value the designer sets the mark that names it.
+#:
+#: معلومات التواصل stands each of its facts under an icon rather than beside
+#: one: measured on the artwork, the icons occupy y 351.8-370.8 and the values
+#: begin at 380.4, so the gap is under ten points. Forty leaves room for the
+#: designer's variation and stops well short of «يقام المزاد» above the row.
+MARK_RISE = 40.0
+
+#: A mark may overhang its value by this much and still belong to it. The
+#: platform's value is the narrowest chip on the page at 56pt and its icon is
+#: 20pt, so nothing here needs the slack; it is there so a client's short value
+#: does not orphan an icon the designer centred on a longer sample.
+MARK_DRIFT = 12.0
+
+#: How much room a mark's region is given when it is taken off the artwork.
+#:
+#: Not a tolerance on where the mark is -- a measure of what «covered» means to
+#: a stroke. MuPDF will only remove line art a redaction covers whole, and it
+#: measures a stroked path by more than the rectangle ``get_drawings`` reports:
+#: the mitred joins of the platform icon's 0.5pt strokes reach beyond their own
+#: bounds, and three of its shapes survived every redaction drawn a point
+#: around them. Measured on that icon: all of it comes away at five points,
+#: nothing more comes away at seven.
+MARK_BLEED = 6.0
+
+#: The marks the designer draws beside a value, which have to come and go with
+#: it. ``group`` names the centred row the values sit in; ``where`` is which
+#: side of the value the designer put the mark on, and ``spread`` says the row
+#: is to be spaced evenly across what it was drawn across.
+#:
+#: The two telephone numbers, on all three cards. «إذا واتساب not exist رقم
+#: التواصل align center and icon of واتساب disappear» is the whole requirement,
+#: and it cannot be met while the icon is ink on the page: the number was a
+#: field and the mark above it was not, so a seller with no WhatsApp printed a
+#: WhatsApp mark with nothing beside it.
+#:
+#: And the fact chips, on the electronic card only. That card is the هجين
+#: drawing with «الموقع» taken off it, which left three chips standing at four
+#: chips' spacing and a hole in the middle of the row. الهجين draws four and
+#: حضوري draws three and both are the designer's own rows, spaced as they were
+#: drawn -- so neither is touched here, and only the card we cut a chip out of
+#: is spaced again.
+MARKED_CHIPS: dict[str, tuple[dict[str, Any], ...]] = {
+    "contact": (
+        {
+            "group": "contact_numbers",
+            "keys": ("contact_whatsapp", "contact_phone"),
+        },
+    ),
+    "contact_electronic": (
+        {
+            "group": "contact_numbers",
+            "keys": ("contact_whatsapp", "contact_phone"),
+        },
+        {
+            "group": "contact_facts",
+            "keys": ("platform_name", "auction_date", "auction_time"),
+            "where": "above",
+            "spread": True,
+        },
+    ),
+    "contact_inperson": (
+        {
+            "group": "contact_numbers",
+            "keys": ("contact_whatsapp", "contact_phone"),
+        },
+    ),
 }
 
 
@@ -3257,11 +3319,39 @@ def _mark_beside(page: fitz.Page, box: fitz.Rect) -> list[dict]:
     line. Bounded by ``MARK_REACH`` so a chip can never claim its neighbour's.
     """
     window = fitz.Rect(box.x1, box.y0 - 6.0, box.x1 + MARK_REACH, box.y1 + 6.0)
+    return _shapes_in(page, window, MARK_REACH)
+
+
+def _mark_above(page: fitz.Page, box: fitz.Rect) -> list[dict]:
+    """The shapes the designer set immediately above a value.
+
+    معلومات التواصل names its four facts this way rather than the way it names
+    its telephone numbers: a clock over the hours, a calendar over the date, a
+    pin over the venue, a laptop over the platform. The window is the value's
+    own column, widened by ``MARK_DRIFT`` so a mark centred on a longer sample
+    still belongs to the value beneath it, and reaching no further up than
+    ``MARK_RISE`` so it can never claim the heading above the row.
+    """
+    window = fitz.Rect(
+        box.x0 - MARK_DRIFT,
+        box.y0 - MARK_RISE,
+        box.x1 + MARK_DRIFT,
+        box.y0,
+    )
+    return _shapes_in(page, window, MARK_REACH)
+
+
+def _shapes_in(page: fitz.Page, window: fitz.Rect, limit: float) -> list[dict]:
+    """Every drawn shape wholly inside ``window`` and no wider than ``limit``.
+
+    The size bound is what stops a mark's window from swallowing a rule or a
+    panel that happens to pass through it.
+    """
     found = []
     for drawing in page.get_drawings():
         rect = fitz.Rect(drawing["rect"])
         rect.normalize()
-        if rect.is_empty or rect.width > MARK_REACH:
+        if rect.is_empty or rect.width > limit:
             continue
         if window.contains(rect):
             found.append(drawing)
@@ -3298,12 +3388,19 @@ def _lift_marks(
                 f"page {page.number}: {key!r} carries a mark to lift and no "
                 f"rule made the field -- found {sorted(by_key)!r}"
             )
-        marks = _mark_beside(page, spec.rect.to_points(page_rect))
+        above = plan.get("where") == "above"
+        box = spec.rect.to_points(page_rect)
+        marks = _mark_above(page, box) if above else _mark_beside(page, box)
         if not marks:
+            where = (
+                f"within {MARK_RISE:.0f}pt above"
+                if above
+                else f"within {MARK_REACH:.0f}pt to the right of"
+            )
             raise MapError(
-                f"page {page.number}: no mark within {MARK_REACH:.0f}pt to the "
-                f"right of {key!r}. If the export moved it, measure the gap and "
-                f"widen MARK_REACH; the icon must not be left baked."
+                f"page {page.number}: no mark {where} {key!r}. If the export "
+                f"moved it, measure the gap and widen MARK_RISE/MARK_REACH; "
+                f"the icon must not be left baked."
             )
         caught.append((spec, marks))
 
@@ -3319,11 +3416,35 @@ def _lift_marks(
 
     wanted = [d for _, marks in caught for d in marks]
     before = {_shape_id(d) for d in page.get_drawings()}
+    # One region per mark, not one per shape, and given real room.
+    #
+    # ``REMOVE_IF_COVERED`` measures a stroke by more than the rectangle
+    # ``get_drawings`` reports: the platform's laptop is drawn in 0.5pt strokes
+    # whose mitred joins reach past their own bounds, and three of its seven
+    # shapes sat out every redaction drawn a point around them -- the icon was
+    # recorded, half erased, and drawn again over what was left. Measured on
+    # that icon, the whole of it comes away from five points and no more comes
+    # away from seven; six is the middle of that. The mark's own shapes are
+    # unioned first because a region has to cover a shape whole to take it, and
+    # the marks stand a hundred points apart, so nothing else is within reach.
+    #
+    # ``REMOVE_IF_TOUCHED`` would take all seven at a single point of margin,
+    # and would also take anything that merely crossed the region. The check
+    # below is what makes either safe, and this is the one that cannot reach
+    # past a neighbour to begin with.
     for _, marks in caught:
-        for drawing in marks:
+        region = fitz.Rect(marks[0]["rect"])
+        region.normalize()
+        for drawing in marks[1:]:
             rect = fitz.Rect(drawing["rect"])
             rect.normalize()
-            page.add_redact_annot(rect + (-1, -1, 1, 1))
+            region = fitz.Rect(
+                min(region.x0, rect.x0), min(region.y0, rect.y0),
+                max(region.x1, rect.x1), max(region.y1, rect.y1),
+            )
+        page.add_redact_annot(
+            region + (-MARK_BLEED, -MARK_BLEED, MARK_BLEED, MARK_BLEED)
+        )
     page.apply_redactions(
         images=fitz.PDF_REDACT_IMAGE_NONE,
         graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
@@ -3341,6 +3462,119 @@ def _lift_marks(
     for spec, paths in recorded:
         spec.ornament = paths
         spec.row_group = plan["group"]
+
+
+def _row_extent(spec: FieldSpec, page_rect: fitz.Rect) -> fitz.Rect:
+    """The room a chip takes: its value's box and the mark that names it.
+
+    The same measure the renderer takes when it re-centres a row, so a chip
+    moved here and a chip moved there are moved by the same reckoning.
+    """
+    box = spec.rect.to_points(page_rect)
+    xs = [
+        page_rect.x0 + x * page_rect.width
+        for path in spec.ornament
+        for item in path.items
+        for x in item.points[::2]
+    ]
+    ys = [
+        page_rect.y0 + y * page_rect.height
+        for path in spec.ornament
+        for item in path.items
+        for y in item.points[1::2]
+    ]
+    if not xs or not ys:
+        return box
+    # By hand rather than by unioning point-rects: a rect with no width is
+    # empty and ``Rect.__or__`` ignores an empty rect.
+    return fitz.Rect(
+        min(box.x0, *xs), min(box.y0, *ys), max(box.x1, *xs), max(box.y1, *ys)
+    )
+
+
+def _shift_chip(spec: FieldSpec, dx: float, page_rect: fitz.Rect) -> None:
+    """Move a chip sideways -- its value's box and its mark together."""
+    step = dx / page_rect.width
+    spec.rect = NormRect(
+        x=spec.rect.x + step, y=spec.rect.y, w=spec.rect.w, h=spec.rect.h
+    )
+    for path in spec.ornament:
+        for item in path.items:
+            item.points = [
+                value + step if index % 2 == 0 else value
+                for index, value in enumerate(item.points)
+            ]
+
+
+def _spread_row(
+    page: fitz.Page,
+    page_rect: fitz.Rect,
+    specs: list[FieldSpec],
+    plan: dict[str, Any],
+    gone: list[fitz.Rect],
+) -> list[fitz.Rect]:
+    """Space what is left of a row evenly across what the row was drawn across.
+
+    معلومات التواصل is one drawing serving all three auctions, and an
+    electronic one is held nowhere -- so «الموقع» comes off the page before
+    anything is derived from it. That left the other three chips standing where
+    four chips stood, with the venue's gap still in the middle of the row and
+    the platform hard against the right margin. «الموقع» is not missing from
+    this card; it was never one of this auction's facts, and a row with a hole
+    in it reads as one that failed to print.
+
+    Evenly by the chips' *centres*, which is how the row reads: each chip is a
+    mark with its value centred under it, and the eye measures the marks. The
+    two outermost keep the edges the designer gave the row -- the first chip's
+    left and the last chip's right do not move -- so the row still occupies the
+    band it was drawn in and only the space inside it is shared out.
+
+    Nothing happens unless something was actually taken off this row. A card
+    that lost no chip is the designer's own spacing and is left exactly as
+    drawn, which is why الهجين and حضوري are untouched by this.
+
+    Returns the boxes the chips have just left, which have to be cleared as
+    well as the ones they moved into. Baking clears the region a field will
+    draw over and nothing else, so a chip that moved leaves the designer's own
+    sample standing where it used to be -- «الخميس 11 مارس 2024» printed at the
+    new place and «وليو 2026» left behind at the old one.
+    """
+    by_key = {s.key: s for s in specs}
+    members = [by_key[k] for k in plan["keys"] if k in by_key]
+    if len(members) < 2:
+        return []
+    boxes = {s.key: _row_extent(s, page_rect) for s in members}
+    members.sort(key=lambda s: boxes[s.key].x0)
+    band = fitz.Rect(
+        min(b.x0 for b in boxes.values()), min(b.y0 for b in boxes.values()),
+        max(b.x1 for b in boxes.values()), max(b.y1 for b in boxes.values()),
+    )
+    # Only what was cut out of this row -- the page also loses a code far below
+    # it, and that is not this row's space to take back.
+    lost = [r for r in gone if r.y0 < band.y1 and r.y1 > band.y0]
+    if not lost:
+        return []
+    left = min(band.x0, *[r.x0 for r in lost])
+    right = max(band.x1, *[r.x1 for r in lost])
+    first = boxes[members[0].key].width / 2
+    last = boxes[members[-1].key].width / 2
+    start, end = left + first, right - last
+    if end <= start:
+        raise MapError(
+            f"page {page.number}: the row {plan['group']!r} is wider than the "
+            f"space it was drawn in, so it cannot be spaced evenly"
+        )
+    steps = len(members) - 1
+    vacated: list[fitz.Rect] = []
+    for index, spec in enumerate(members):
+        box = boxes[spec.key]
+        target = start + (end - start) * index / steps
+        step = target - (box.x0 + box.x1) / 2
+        if abs(step) < 0.01:
+            continue
+        vacated.append(spec.rect.to_points(page_rect))
+        _shift_chip(spec, step, page_rect)
+    return vacated
 
 
 def _erase_frame(
@@ -3696,12 +3930,14 @@ def build(source_map: SourceMap, source: Path, out_dir: Path) -> dict:
         # What this variant's auction does not have, off the page before
         # anything is derived from it: a region nothing draws over is a region
         # the bake will not clear, so it has to go now or it prints for ever.
+        removed: list[fitz.Rect] = []
         if mapped.remove:
-            _erase_blocks(page, [
+            removed = [
                 fitz.Rect(x0 * page_rect.width, y0 * page_rect.height,
                           x1 * page_rect.width, y1 * page_rect.height)
                 for x0, y0, x1, y1 in mapped.remove
-            ])
+            ]
+            _erase_blocks(page, removed)
             candidates = derive_page(doc, position)
             derived[position] = candidates
         candidates = derived.get(position, [])
@@ -3775,13 +4011,16 @@ def build(source_map: SourceMap, source: Path, out_dir: Path) -> dict:
             # lifted off the page so that a seller with no WhatsApp does not
             # print a WhatsApp icon with nothing beside it. Done here, after
             # the rules, because the marks are found from where the values are.
-            marked = MARKED_CHIPS.get(mapped.rules)
-            if marked:
-                _lift_marks(
-                    page, page_rect,
-                    [s for s in specs if s.page_index == position],
-                    marked,
-                )
+            for marked in MARKED_CHIPS.get(mapped.rules, ()):
+                on_page = [s for s in specs if s.page_index == position]
+                _lift_marks(page, page_rect, on_page, marked)
+                # Spaced only after the marks are off the page, because a chip
+                # moves with the mark that names it and the mark is not the
+                # chip's until it has been lifted.
+                if marked.get("spread"):
+                    table_cells[position].extend(
+                        _spread_row(page, page_rect, on_page, marked, removed)
+                    )
 
         if mapped.role in (PageRole.LOT, PageRole.LOT_FEATURES, PageRole.BOUNDARIES):
             on_page = [s for s in specs if s.page_index == position]

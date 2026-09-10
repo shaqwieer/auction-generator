@@ -112,6 +112,25 @@ def _joined(prefix: str, inner: str) -> str:
     return f"{prefix}{inner}"
 
 
+def _stacked(text: str) -> str:
+    """The first word on its own line and the rest beneath it.
+
+    «يكون اسم المزاد على سطرين إذا تم إستخدام الأيقونة يمين الاسم» -- the
+    guide's rule for the name that stands beside the mark, and both of its own
+    samples break it the same way: «مزاد» over «أعيان حائل», «مـزاد» over «درة
+    البحر». The newline is what the engine turns into a <br>, so this is the
+    same kind of break the designer typed.
+
+    A name already broken by hand is left alone rather than broken again -- two
+    breaks would make three lines -- and a single word is returned untouched,
+    because there is no second line to put anything on.
+    """
+    if "\n" in text:
+        return text
+    head, sep, tail = text.strip().partition(" ")
+    return f"{head}\n{tail.strip()}" if sep and tail.strip() else text
+
+
 def _caption(spec: FieldSpec, value: str, booklet: dict) -> str:
     """What this field actually prints: fixed wording around a typed value.
 
@@ -120,6 +139,8 @@ def _caption(spec: FieldSpec, value: str, booklet: dict) -> str:
     auction's own name in it, and typing replaces only the name.
     """
     inner = value or _resolve(spec.default_value, booklet)
+    if spec.two_lines:
+        inner = _stacked(inner)
     if not spec.prefix and not spec.suffix:
         return inner
     if spec.prefix:

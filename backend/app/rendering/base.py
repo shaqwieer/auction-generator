@@ -222,6 +222,23 @@ class FieldSpec:
     #: twice for one fact. Resolved at draw time, never copied, so a title
     #: corrected on the cover corrects the steps page too.
     default_value: str = ""
+    #: Set this value on two lines, breaking after its first word.
+    #:
+    #: The brand guide's rule for the auction's name: «يكون اسم المزاد على
+    #: سطرين إذا تم إستخدام الأيقونة يمين الاسم» -- the name is set on two lines
+    #: wherever the mark stands to the right of it, which on this template is
+    #: every cover. The designer's own two samples both break the same way,
+    #: «مزاد» over «أعيان حائل» and «مـزاد» over «درة البحر»: the first word on
+    #: its own line and the rest beneath it.
+    #:
+    #: A break, not a narrower box. Narrowing until the text wraps puts the
+    #: break wherever the line happens to run out -- «مزاد أعيان» over «حائل» on
+    #: one name and nothing at all on a short one -- and the box a cover gives
+    #: the title is the designer's, not ours to shrink.
+    #:
+    #: A name the client has already broken themselves is left as typed, and a
+    #: single word stays on one line: there is no second line to put it on.
+    two_lines: bool = False
     #: Fit the image inside the box instead of filling it. A photograph is
     #: cropped to its frame, which is what a frame is for; a logo cropped to a
     #: frame is a broken logo, and one stretched to it is worse.
