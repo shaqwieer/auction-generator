@@ -424,7 +424,15 @@ class PyMuPDFOverlayRenderer:
         # artwork so that it could be absent. «معلومات الإيجار» leads to a page
         # the booklet only sometimes contains, and a chip leading to a page
         # that is not there is worse than no chip.
-        if spec.part is not None and drawing:
+        if spec.part is not None:
+            if not drawing:
+                # Nothing at all, not merely no cutting. The address behind
+                # «معلومات الإيجار» is a value on the property and outlives its
+                # lease page being switched off, so a booklet the build cut the
+                # chip out of would otherwise carry a click target over the
+                # blank the cutting left. ``_will_draw`` is the whole of the
+                # decision, on both sides of it.
+                return
             page.show_pdf_page(
                 spec.part.rect.to_points(page.rect) + (shift, 0, shift, 0),
                 plan.background,
