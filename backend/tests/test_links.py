@@ -88,14 +88,23 @@ def test_every_code_in_the_booklet_is_a_field(template):
         f["key"] == f"__qr_{LEASE_SLOT}" for f in template["fields"]
     ), "a chip that leads to a page of the booklet cannot be a printed code"
 
+    # A page drawn for a screen carries chips and no codes at all -- the
+    # designer drew the lot pages twice and only one of them is scanned. So the
+    # pairing is checked on the pages that print a code, and every one of those
+    # has to have both halves.
+    coded = {
+        f["page_index"] for f in template["fields"] if f["type"] == "qr"
+    }
     for slot in offered - {LEASE_SLOT}:
         addresses = [f for f in template["fields"] if f["key"] == slot]
         codes = [f for f in template["fields"] if f["key"] == f"__qr_{slot}"]
         assert all(f["type"] == "link" for f in addresses)
         assert codes and all(f["type"] == "qr" for f in codes)
-        assert {f["page_index"] for f in addresses} == {
-            f["page_index"] for f in codes
-        }, "the two halves of a chip sit on the same pages"
+        assert {
+            f["page_index"] for f in addresses if f["page_index"] in coded
+        } == {f["page_index"] for f in codes}, (
+            "the two halves of a chip sit on the same pages"
+        )
 
 
 def test_the_click_target_is_the_whole_chip_not_the_bare_square(template):
@@ -115,11 +124,18 @@ def test_the_click_target_is_the_whole_chip_not_the_bare_square(template):
     for slot in scannable:
         for chip in (f for f in template["fields"] if f["key"] == slot):
             square = next(
-                f
-                for f in template["fields"]
-                if f["key"] == f"__qr_{slot}"
-                and f["page_index"] == chip["page_index"]
+                (
+                    f
+                    for f in template["fields"]
+                    if f["key"] == f"__qr_{slot}"
+                    and f["page_index"] == chip["page_index"]
+                ),
+                None,
             )
+            if square is None:
+                # A page drawn for a screen: the chip is the target and there
+                # is no square to measure it against.
+                continue
             assert chip["w"] * chip["h"] > square["w"] * square["h"] * 1.4, (
                 f"{slot} on page {chip['page_index']} is barely wider than the "
                 "code — the caption is not in the target"

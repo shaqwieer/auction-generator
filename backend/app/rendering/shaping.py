@@ -96,6 +96,30 @@ def _as_html(value: str, bold_family: str | None = None) -> str:
     return "<br>".join(out)
 
 
+#: ``text-align`` is *logical* to MuPDF's story engine, not physical.
+#:
+#: Measured, on a paragraph of Arabic in a box under ``dir="rtl"``: asking for
+#: ``right`` laid every line against the box's left edge, and asking for
+#: ``left`` laid them against its right. The engine reads the keyword as
+#: start/end and start is the right edge in a right-to-left paragraph, so the
+#: two names come out swapped from what CSS means by them.
+#:
+#: One line never showed it. ``_delta`` pins a right-aligned field's rendered
+#: right edge onto the target's, so a value on its own line lands where it
+#: belongs whichever way the story laid it out. It is a paragraph that breaks:
+#: نبذة عن وكيل البيع and نص الإعلان wrapped with their short last line hanging
+#: off the left, which is what a left-aligned Arabic paragraph looks like.
+#:
+#: Only under ``rtl``. The three chips on تعريف وكيل البيع are set ``rtl=False``
+#: because an address and a handle are Latin, and there the keyword means what
+#: CSS says it means.
+_RTL_ALIGN: dict[Align, str] = {
+    Align.RIGHT: "left",
+    Align.LEFT: "right",
+    Align.CENTER: "center",
+}
+
+
 def _css_block(
     *,
     registry: FontRegistry,
@@ -105,11 +129,12 @@ def _css_block(
     color: str,
     align: Align,
     line_height: float,
+    rtl: bool = True,
 ) -> tuple[str, str]:
     """Return (css, inline_style) for one text field."""
     face = registry.face(family, weight)
     style = (
-        f"text-align:{align.value};"
+        f"text-align:{_RTL_ALIGN[align] if rtl else align.value};"
         f"font-family:{face.css_family};"
         f"font-size:{size_pt}px;"
         f"color:{color};"
@@ -243,6 +268,7 @@ def calibrated_htmlbox(
         color=color,
         align=align,
         line_height=line_height,
+        rtl=rtl,
     )
     archive = registry.archive()
     direction = "rtl" if rtl else "ltr"

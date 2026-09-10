@@ -135,6 +135,13 @@ export interface TemplateFieldOut {
   is_required: boolean;
   rtl: boolean;
   /**
+   * Images only: fit the mark inside its box rather than crop it to fill.
+   *
+   * It is also what tells a mark from a photograph, which is the difference
+   * between a box the client may resize and a frame the designer drew.
+   */
+  preserve_aspect: boolean;
+  /**
    * Fixed wording printed around the value, and what prints without one.
    *
    * A caption that is mostly the guide's sentence asks only for the words that

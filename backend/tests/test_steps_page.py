@@ -222,3 +222,47 @@ def test_an_unnamed_auction_falls_back_to_the_project_it_belongs_to():
     """«إختيار مزاد (  )» is worse on paper than a working title."""
     facts = booklet_facts({}, [{"id": "a", "values": {}}], project_name="مزاد سبتمبر")
     assert facts["auction_title"] == "مزاد سبتمبر"
+
+
+# --------------------------------------------- the brackets, and the join
+
+
+def test_the_auction_is_named_without_the_guides_placeholder_brackets(built):
+    """«إختيار مزاد (إسم المزاد)» — the brackets mark a place to be filled.
+
+    The guide writes them the way it writes «شعار وكيل البيع», and the export
+    fills its own sample in between them. Printed, every booklet read «إختيار
+    مزاد ( أعيان حائل )».
+    """
+    fields = _steps_fields(built)
+    name = fields["steps_auction_name"]
+    assert "(" not in name["prefix"] and ")" not in name["suffix"], (
+        f"the placeholder brackets should be gone: "
+        f"{name['prefix']!r} … {name['suffix']!r}"
+    )
+
+
+def test_the_refundable_note_keeps_its_own_brackets(built):
+    """«(قابلة للإسترداد)» is a parenthetical the guide actually writes."""
+    fields = _steps_fields(built)
+    refundable = fields["steps_refundable"]
+    assert "(" in refundable["prefix"] and ")" in refundable["suffix"]
+
+
+def test_a_caption_does_not_say_one_word_twice_across_its_join():
+    """«إختيار مزاد » + «مزاد أعيان حائل» is not «إختيار مزاد مزاد أعيان حائل».
+
+    The designer's sample wrote the bare name between the brackets, which is
+    what a person does without thinking. The fallback cannot: the name it falls
+    back to is the whole title, because that is the fact the booklet holds.
+    """
+    from app.rendering.overlay import _joined
+
+    assert _joined("إختيار مزاد ", "مزاد أعيان حائل") == "إختيار مزاد أعيان حائل"
+    # A name that does not repeat the word keeps every word it has.
+    assert _joined("إختيار مزاد ", "أعيان حائل") == "إختيار مزاد أعيان حائل"
+    # And a join that shares no word is left exactly alone, brackets included.
+    assert (
+        _joined("سداد قيمة المشاركة في\nالمزاد (", "قابلة للإسترداد")
+        == "سداد قيمة المشاركة في\nالمزاد (قابلة للإسترداد"
+    )

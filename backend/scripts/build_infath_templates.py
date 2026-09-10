@@ -37,7 +37,7 @@ import dataclasses
 import json
 import sys
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from copy import deepcopy
 from itertools import pairwise
 from pathlib import Path
@@ -50,6 +50,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.rendering.autokey import VALUE_COLORS, normalise, suggest
 from app.rendering.bake import bake_document
 from app.rendering.base import (
+    ChipPart,
     FieldSpec,
     FieldType,
     FrameItem,
@@ -61,18 +62,19 @@ from app.rendering.base import (
     TableSpec,
 )
 from app.rendering.compose import Section
-from app.rendering.derive import DerivedField, derive_document
+from app.rendering.derive import DerivedField, derive_document, derive_page
 from app.rendering.fonts import brand_registry
 from app.rendering.pagemap import (
     PER_LOT_ROLES,
     MapError,
     PageRole,
     SourceMap,
+    SourcePage,
     assert_map,
 )
 from app.rendering.shaping import Align, Fit, VAlign, calibrated_htmlbox
 from app.rendering.tables import derive_tables, to_norm
-from scripts.pagemaps.auction_infath import IN_PERSON_EXPORT, MAPS
+from scripts.pagemaps.auction_infath import ELECTRONIC, IN_PERSON_EXPORT, MAPS
 
 BACKEND = Path(__file__).resolve().parent.parent
 REFERENCES = BACKEND.parent / "references"
@@ -175,9 +177,15 @@ RULES: dict[str, list[dict[str, Any]]] = {
         # Keeps its own key rather than sharing `auction_date` with the
         # information and contact pages: that key is a template static, and a
         # project-level value for it would print itself onto the cover.
+        # Keeps its own key and inherits the auction's date. The key stays
+        # separate because a project-level `auction_date` must not print itself
+        # onto the cover; the fallback is what makes the date one fact all the
+        # same, typed on معلومات المزاد and printed here without being asked
+        # for twice.
         {"key": "auction_date_block", "label": "تاريخ المزاد",
          "match": "#FFFFFF", "index": 1, "last_line": True,
-         "align": Align.CENTER, "fit": Fit.WRAP},
+         "align": Align.CENTER, "fit": Fit.WRAP,
+         "default_value": "{auction_date}"},
     ],
     "intro_agent": [
         # The title is the company's name, and the company's name is on the
@@ -217,11 +225,20 @@ RULES: dict[str, list[dict[str, Any]]] = {
         # the guide sets them. Centred, each one floated in a box the width of
         # whatever the designer happened to type, and «الرياض» began a hundred
         # points from «5 يوليو».
+        # Each falls back to itself — that is, to wherever in the booklet it
+        # was actually typed. معلومات التواصل prints the same four facts, and
+        # asking for them on both pages was asking twice for one fact and
+        # letting the two disagree. Whichever page it is typed on, both print
+        # it; typing on this one still wins here.
         {"match": CHIP, "align": Align.RIGHT, "each": [
-            ("auction_time", "وقت المزاد"),
-            ("auction_date", "تاريخ المزاد"),
-            ("location", "الموقع"),
-            ("platform_name", "اسم المنصة"),
+            {"key": "auction_time", "label": "وقت المزاد",
+             "default_value": "{auction_time}"},
+            {"key": "auction_date", "label": "تاريخ المزاد",
+             "default_value": "{auction_date}"},
+            {"key": "location", "label": "الموقع",
+             "default_value": "{location}"},
+            {"key": "platform_name", "label": "اسم المنصة",
+             "default_value": "{platform_name}"},
         ]},
     ],
     # The same page from the electronic booklet's own export, which is a
@@ -242,9 +259,12 @@ RULES: dict[str, list[dict[str, Any]]] = {
         {"key": "announcement", "label": "نص الإعلان", "match": "#231F20",
          "merge": True, "cluster": 0, "fit": Fit.WRAP},
         {"match": "#01A4A2", "align": Align.RIGHT, "each": [
-            ("auction_time", "وقت المزاد"),
-            ("auction_date", "تاريخ المزاد"),
-            ("platform_name", "اسم المنصة"),
+            {"key": "auction_time", "label": "وقت المزاد",
+             "default_value": "{auction_time}"},
+            {"key": "auction_date", "label": "تاريخ المزاد",
+             "default_value": "{auction_date}"},
+            {"key": "platform_name", "label": "اسم المنصة",
+             "default_value": "{platform_name}"},
         ]},
     ],
     "lot_standard": [
@@ -258,10 +278,23 @@ RULES: dict[str, list[dict[str, Any]]] = {
          "size": 0.0, "align": Align.CENTER},
         # Only the electronic lot pages carry a closing chip; on the others
         # these find nothing and no field is made.
+        #
+        # The band spans both drawings of the page: the printed one sets these
+        # at 8.4-9.4pt and the screen one at 9.8-11.0. What keeps a band that
+        # wide off the printed labels around them is the vocabulary rather than
+        # its width -- «الحدود», «الأطوال», «معلومات اضافية» and the four chip
+        # captions are all static headings, and a heading is skipped before its
+        # size is looked at. Without that, the screen page's chip captions were
+        # claimed as the closing date and time, cleared by the bake, and the
+        # page came out with two blank bars.
         {"match": "#FFFFFF", "columns": [
             ("closing_date", "تاريخ إغلاق المزايدة"),
             ("closing_time", "وقت إغلاق المزايدة"),
-        ], "sizes": (8.0, 9.8), "size": 0.0, "align": Align.CENTER},
+        ], "sizes": (8.0, 11.5), "size": 0.0, "align": Align.CENTER,
+         # Measured, and tighter than the default: the printed drawing leaves
+         # 19.2pt between the date and the time, the screen one 8.8pt, and ten
+         # would read the screen chip as a single value.
+         "gap": 8.0},
         {"key": "main_photo", "label": "صورة العقار", "match": "image",
          "required": True, "frame": True},
         {"key": "description", "label": "وصف العقار", "match": BODY,
@@ -282,7 +315,11 @@ RULES: dict[str, list[dict[str, Any]]] = {
         {"match": "#FFFFFF", "columns": [
             ("closing_date", "تاريخ إغلاق المزايدة"),
             ("closing_time", "وقت إغلاق المزايدة"),
-        ], "sizes": (8.0, 9.8), "size": 0.0, "align": Align.CENTER},
+        ], "sizes": (8.0, 11.5), "size": 0.0, "align": Align.CENTER,
+         # Measured, and tighter than the default: the printed drawing leaves
+         # 19.2pt between the date and the time, the screen one 8.8pt, and ten
+         # would read the screen chip as a single value.
+         "gap": 8.0},
         {"key": "main_photo", "label": "صورة العقار", "match": "image",
          "required": True, "frame": True},
         {"key": "description", "label": "وصف العقار", "match": BODY,
@@ -351,14 +388,26 @@ RULES: dict[str, list[dict[str, Any]]] = {
         # to. A page drawing three is *not* these four minus the last -- see
         # ``contact_inperson``.
         {"match": CHIP_ALT, "columns": [
-            ("platform_name", "اسم المنصة"),
-            ("location", "الموقع"),
-            ("auction_date", "تاريخ المزاد"),
-            ("auction_time", "وقت المزاد"),
+            {"key": "platform_name", "label": "اسم المنصة",
+             "default_value": "{platform_name}"},
+            {"key": "location", "label": "الموقع",
+             "default_value": "{location}"},
+            {"key": "auction_date", "label": "تاريخ المزاد",
+             "default_value": "{auction_date}"},
+            {"key": "auction_time", "label": "وقت المزاد",
+             "default_value": "{auction_time}"},
         ], "size": 10.4},
+        # واتساب first, because the splitter hands out keys right to left and
+        # the right-hand chip is the WhatsApp one. Measured on the artwork
+        # rather than assumed: each icon sits to the *right* of its own number,
+        # so the handset at x=268 belongs to the number at 164 and the WhatsApp
+        # bubble at x=422 to the number at 309. Listed the other way round, the
+        # client's رقم التواصل printed under the WhatsApp mark and their
+        # WhatsApp under the telephone — each chip labelled with its
+        # neighbour's name, the same way «اسم المنصة» once was.
         {"match": CHIP_ALT, "columns": [
-            ("contact_phone", "رقم التواصل"),
             ("contact_whatsapp", "واتساب"),
+            ("contact_phone", "رقم التواصل"),
         ], "size": 14.6},
     ],
     # The same page in the حضوري export, which draws three chips rather than
@@ -378,29 +427,49 @@ RULES: dict[str, list[dict[str, Any]]] = {
     # The hours are two runs and stay two fields rather than being merged into
     # one box: they are two printed lines with a line's worth of space between
     # them, and a single box would have to invent where the break goes.
+    # The same page as ``contact``, on an auction that is held nowhere.
+    #
+    # The الموقع chip and the قاعة المزاد code are taken off the artwork
+    # before anything is derived (``SourcePage.remove``), so the card is left
+    # with التاريخ، اسم المنصة، الوقت and the two telephone numbers --
+    # which is the guide's إلكتروني card. Three columns and no placeholder
+    # among them: the chip is not merely unnamed here, it is off the page, so
+    # the splitter has three groups to hand out and hands them out in the order
+    # they are drawn -- اسم المنصة on the right, then التاريخ, then الوقت.
     "contact_electronic": [
-        {"match": "#00A3A1", "align": Align.RIGHT, "each": [
-            ("platform_name", "اسم المنصة"),
-            ("auction_time", "بداية المزاد"),
-            ("auction_date", "أيام المزاد"),
-            ("auction_time_end", "نهاية المزاد"),
-        ]},
-        # The only navy run left once the two headings are spoken for. Both of
-        # them are in STATIC_HEADINGS, so the pool is the number alone; before
-        # «يقام المزاد إلكترونيا» was listed there it was index 0, and a
-        # printed heading was cleared to draw a telephone number over it.
-        {"key": "contact_phone", "label": "رقم التواصل", "match": "#13375A",
-         "index": 0, "align": Align.CENTER},
+        {"match": CHIP_ALT, "columns": [
+            {"key": "platform_name", "label": "اسم المنصة",
+             "default_value": "{platform_name}"},
+            {"key": "auction_date", "label": "تاريخ المزاد",
+             "default_value": "{auction_date}"},
+            {"key": "auction_time", "label": "وقت المزاد",
+             "default_value": "{auction_time}"},
+        ], "size": 10.4},
+        {"match": CHIP_ALT, "columns": [
+            ("contact_whatsapp", "واتساب"),
+            ("contact_phone", "رقم التواصل"),
+        ], "size": 14.6},
     ],
     "contact_inperson": [
         {"match": CHIP_ALT, "columns": [
-            ("location", "الموقع"),
-            ("auction_date", "تاريخ المزاد"),
-            ("auction_time", "وقت المزاد"),
+            {"key": "location", "label": "الموقع",
+             "default_value": "{location}"},
+            {"key": "auction_date", "label": "تاريخ المزاد",
+             "default_value": "{auction_date}"},
+            {"key": "auction_time", "label": "وقت المزاد",
+             "default_value": "{auction_time}"},
         ], "size": 10.4},
+        # واتساب first, because the splitter hands out keys right to left and
+        # the right-hand chip is the WhatsApp one. Measured on the artwork
+        # rather than assumed: each icon sits to the *right* of its own number,
+        # so the handset at x=268 belongs to the number at 164 and the WhatsApp
+        # bubble at x=422 to the number at 309. Listed the other way round, the
+        # client's رقم التواصل printed under the WhatsApp mark and their
+        # WhatsApp under the telephone — each chip labelled with its
+        # neighbour's name, the same way «اسم المنصة» once was.
         {"match": CHIP_ALT, "columns": [
-            ("contact_phone", "رقم التواصل"),
             ("contact_whatsapp", "واتساب"),
+            ("contact_phone", "رقم التواصل"),
         ], "size": 14.6},
     ],
     "steps": [
@@ -433,16 +502,21 @@ RULES: dict[str, list[dict[str, Any]]] = {
             {"key": "steps_refundable", "label": "قابلة للاسترداد",
              "prefix": "سداد قيمة المشاركة في\nالمزاد (", "suffix": ")",
              "default_value": "قابلة للإسترداد"},
-            # The designer sets spaces inside these brackets, and an
-            # ordinary space is somewhere a line may break: a name longer
-            # than the sample «أعيان حائل» pushed the closing bracket onto a
-            # line of its own. A no-break space binds each bracket to the
-            # word beside it and prints at the same width -- the name may
-            # still break between its own words, which is where a break
-            # belongs.
+            # No brackets. The guide writes this caption «إختيار مزاد (إسم
+            # المزاد) والدخول للمشاركه», and the export fills its own sample
+            # in between them -- but those brackets are the guide marking a
+            # place to be filled, exactly as «شعار وكيل البيع» marks one, and
+            # printing them left every booklet reading «إختيار مزاد ( أعيان
+            # حائل )». Step 3 keeps its brackets: «(قابلة للإسترداد)» is a
+            # parenthetical the guide actually writes, not a place to fill.
+            #
+            # The no-break spaces went with them. They were there to stop a
+            # bracket being pushed onto a line of its own by a name longer
+            # than the sample; with no bracket to strand, the name breaks
+            # between its own words, which is where a break belongs.
             {"key": "steps_auction_name", "label": "اسم المزاد",
-             "prefix": "إختيار مزاد (\u00a0",
-             "suffix": "\u00a0)\nوالدخول للمشاركة",
+             "prefix": "إختيار مزاد ",
+             "suffix": "\nوالدخول للمشاركة",
              "default_value": "{auction_title}"},
             None,                       # الفوز بالمزاد — the designer's
         ], "size": 12.6, "gap": 26.0, "fit": Fit.WRAP,
@@ -785,6 +859,17 @@ def _span_columns(
                     continue
                 if span.get("color") != want:
                     continue
+                # A printed label is design however it is coloured. The chip
+                # captions on a lot page are white on teal, which is what a
+                # value looks like here, and on the screen drawing they are set
+                # at 9.8pt -- inside the band the closing chip's own parts are
+                # matched by. Claimed, they were named «تاريخ إغلاق المزايدة»,
+                # cleared by the bake, and the page came out with two blank
+                # bars where «الرفع المساحي» and «صور إضافية» had been. The
+                # colour-and-size pool has to respect the same vocabulary the
+                # rest of derivation does.
+                if normalise(span["text"]) in STATIC_HEADINGS:
+                    continue
                 if isinstance(size, tuple):
                     # A range, for a chip whose parts are set at four sizes
                     # within a point of each other and whose caption is set
@@ -1124,14 +1209,27 @@ def _apply_rules(
             # As many fields as the page actually carries: the in-person
             # wording has three of these chips, the others four.
             # Ragged on purpose: three chips in one wording, four in another.
-            for (key, label), field in zip(rule["each"], pool, strict=False):
+            for entry, field in zip(rule["each"], pool, strict=False):
+                # ``None`` claims a chip's place in the row without making a
+                # field of it, the way it does in ``columns``: the keys are
+                # handed out in order, so a page that draws a chip this variant
+                # has no fact for would otherwise give every chip after it its
+                # neighbour's name.
+                if entry is None:
+                    continue
+                # A pair is a chip that only holds its value; a mapping can
+                # also say what it falls back to, which is how a fact named on
+                # two pages is asked for once. Same shape as ``columns``.
+                if isinstance(entry, tuple):
+                    entry = {"key": entry[0], "label": entry[1]}
                 specs.append(
                     _spec_from(
-                        field, page_rect, key,
+                        field, page_rect, entry["key"],
                         siblings=candidates,
-                        label=label,
+                        label=entry.get("label", ""),
                         align=rule.get("align", Align.CENTER),
-                        origin=f"rule:{key}/colour={match}/each",
+                        default_value=entry.get("default_value", ""),
+                        origin=f"rule:{entry['key']}/colour={match}/each",
                     )
                 )
             continue
@@ -1292,6 +1390,22 @@ STEPS_LINKS: tuple[tuple[str, str], ...] = (
     ("platform_link", "امسح او اضغط للدخول على المنصة الالكترونية"),
 )
 CONTACT_LINKS: tuple[tuple[str, str], ...] = (("venue_link", "قاعة المزاد"),)
+
+#: The same four chips in the order the *column* stacks them.
+#:
+#: Not the order the printed block uses. The 2x2 block reads survey, lease,
+#: photos, map -- right to left, top row then bottom -- and the column reads
+#: survey, photos, lease, map, top to bottom. Both are measured off the artwork
+#: rather than assumed from the other, and the build checks each: the قياسي
+#: column sets its captions as live text and they are compared name by name,
+#: while the برج column outlines its own, so there the ink widths are ranked
+#: against the widths the brand font gives these four strings.
+LOT_LINKS_COLUMN: tuple[tuple[str, str], ...] = (
+    ("link_survey", "الرفع المساحي"),
+    ("link_photos", "صور إضافية"),
+    ("__lease_link", "معلومات الإيجار"),
+    ("link_map", "أضغط هنا للوصول للرابط"),
+)
 
 #: Which pages print codes, and what each of theirs is for.
 LINK_PAGES: dict[PageRole, tuple[tuple[str, str], ...]] = {
@@ -1606,6 +1720,309 @@ def _link_fields(
             )
         )
     return specs
+
+
+#: A chip on the screen drawing: a rounded bar with its caption reversed out of
+#: it, placed as a small image. Both columns' bars sit inside these bounds --
+#: 100x19 on قياسي, 86x18 on برج -- and nothing else on a lot page is a wide
+#: flat image in the lower-left corner.
+CHIP_BAR_WIDTH = (60.0, 140.0)
+CHIP_BAR_HEIGHT = (12.0, 26.0)
+
+#: How far two bars' left edges may differ and still be one column.
+COLUMN_TOLERANCE = 1.5
+
+
+def _chip_column(page: fitz.Page) -> list[fitz.Rect]:
+    """The stack of link chips on a page drawn for a screen, top to bottom.
+
+    A printed lot page pairs each chip with a code, and ``_qr_slots`` finds the
+    codes. There are no codes here -- a chip on a screen is clicked -- so the
+    chips are found as what they are: identical bars down the left of the page,
+    evenly spaced.
+    """
+    bars = [
+        rect
+        for info in page.get_image_info(xrefs=True)
+        if (rect := fitz.Rect(info["bbox"]))
+        and CHIP_BAR_WIDTH[0] <= rect.width <= CHIP_BAR_WIDTH[1]
+        and CHIP_BAR_HEIGHT[0] <= rect.height <= CHIP_BAR_HEIGHT[1]
+        and rect.x1 < page.rect.width * 0.55
+        and rect.y0 > page.rect.height * 0.65
+    ]
+    if len(bars) < 3:
+        return []
+    bars.sort(key=lambda r: r.y0)
+    left = bars[0].x0
+    if any(abs(r.x0 - left) > COLUMN_TOLERANCE for r in bars):
+        return []
+    steps = [b.y0 - a.y0 for a, b in pairwise(bars)]
+    if max(steps) - min(steps) > 2.0:
+        return []
+    return bars
+
+
+def _column_captions(page: fitz.Page, bars: list[fitz.Rect]) -> list[str]:
+    """Each bar's printed caption, where the export set it as live text."""
+    out: list[str] = []
+    for bar in bars:
+        words = [
+            span["text"]
+            for block in page.get_text("dict")["blocks"]
+            if block["type"] == 0
+            for line in block["lines"]
+            for span in line["spans"]
+            if span["text"].strip() and bar.intersects(fitz.Rect(span["bbox"]))
+        ]
+        out.append(normalise("".join(words)))
+    return out
+
+
+def _caption_ink(page: fitz.Page, bar: fitz.Rect) -> float:
+    """How wide the caption inside a bar is drawn, outlines included.
+
+    The برج column converts its captions to outlines, so there is no string to
+    compare. There is still a width, and four strings of different lengths rank
+    by width in one order only -- which is enough to say the column is stacked
+    the way it is declared, and to refuse the page if a revision reorders it.
+    """
+    spans = [
+        fitz.Rect(drawing["rect"])
+        for drawing in page.get_drawings()
+        if bar.contains(fitz.Rect(drawing["rect"]).normalize() & bar)
+        and bar.intersects(fitz.Rect(drawing["rect"]))
+        and _ink(drawing.get("fill")) == [1.0, 1.0, 1.0]
+    ]
+    if not spans:
+        return 0.0
+    return max(s.x1 for s in spans) - min(s.x0 for s in spans)
+
+
+def _assert_column_order(
+    page: fitz.Page, bars: list[fitz.Rect], named: tuple[tuple[str, str], ...]
+) -> None:
+    """Refuse a column whose chips are not in the order that was declared."""
+    captions = _column_captions(page, bars)
+    if all(captions):
+        for got, (key, want) in zip(captions, named, strict=True):
+            if normalise(want) not in got and got not in normalise(want):
+                raise MapError(
+                    f"page {page.number}: the chip column reads {captions!r}, "
+                    f"which is not the declared order "
+                    f"{[c for _, c in named]!r} -- {key!r} is in the wrong place"
+                )
+        return
+
+    # Outlined: rank the drawn widths against the widths the brand font gives
+    # these strings. Absolute widths would depend on the face and the size the
+    # designer set; the order they come in does not.
+    face = brand_registry().face("RuaqArabic", "Medium")
+    font = fitz.Font(fontbuffer=brand_registry().data(face))
+    drawn = [_caption_ink(page, bar) for bar in bars]
+    if not all(drawn):
+        raise MapError(
+            f"page {page.number}: a chip in the column has no caption in it"
+        )
+    wanted = [font.text_length(caption, fontsize=10) for _, caption in named]
+    if _ranking(drawn) != _ranking(wanted):
+        raise MapError(
+            f"page {page.number}: the outlined chip captions are drawn "
+            f"{[round(w, 1) for w in drawn]} wide, which does not rank like "
+            f"{[c for _, c in named]!r} ({[round(w, 1) for w in wanted]}) -- "
+            f"the column is not stacked in the declared order"
+        )
+
+
+def _ranking(values: list[float]) -> list[int]:
+    order = sorted(range(len(values)), key=lambda i: values[i])
+    rank = [0] * len(values)
+    for place, index in enumerate(order):
+        rank[index] = place
+    return rank
+
+
+def _column_link_fields(
+    page: fitz.Page, page_index: int, page_rect: fitz.Rect
+) -> list[FieldSpec]:
+    """The link chips on a lot page drawn for a screen.
+
+    One field per chip and no code beside it: the whole bar is the click
+    target, which is what «أضغط هنا للوصول للرابط» asks a reader to do. The
+    printed drawing of the same page keeps its 2x2 block and its four codes;
+    this is the other drawing, not a replacement for it.
+
+    A column of three is the designer's own page for a property with no lease
+    contracts -- the قياسي screen page is drawn that way -- so the lease chip is
+    dropped from the naming rather than the column being called wrong.
+    """
+    bars = _chip_column(page)
+    if not bars:
+        return []
+    named = LOT_LINKS_COLUMN
+    if len(bars) == len(named) - 1:
+        named = tuple(n for n in named if n[0] != "__lease_link")
+    if len(bars) != len(named):
+        raise MapError(
+            f"page {page.number}: {len(bars)} chips in the column, and the "
+            f"map knows of {len(LOT_LINKS_COLUMN)}"
+        )
+    _assert_column_order(page, bars, named)
+    return [
+        FieldSpec(
+            key=key,
+            page_index=page_index,
+            rect=NormRect.from_points(bar & page_rect, page_rect),
+            type=FieldType.LINK,
+            label=caption,
+            rtl=False,
+            origin=f"rule:{key}/link-chip/column",
+        )
+        for bar, (key, caption) in zip(bars, named, strict=True)
+    ]
+
+
+#: The key of the one chip a booklet does not always print.
+LEASE_CHIP_KEY = "__lease_link"
+
+#: How far beside a chip's bar its arrow may sit and still be part of it.
+#: Measured: the printed drawing leaves 5.4pt between the bar and the arrow,
+#: the screen one 6.0pt, and the next chip is a whole row away.
+CHIP_ARROW_REACH = 14.0
+
+
+def _chip_bar(page: fitz.Page, near: fitz.Rect) -> fitz.Rect | None:
+    """The bar a caption is reversed out of, given roughly where the chip is."""
+    found = [
+        rect
+        for info in page.get_image_info(xrefs=True)
+        if (rect := fitz.Rect(info["bbox"]))
+        and CHIP_BAR_WIDTH[0] <= rect.width <= CHIP_BAR_WIDTH[1]
+        and CHIP_BAR_HEIGHT[0] <= rect.height <= CHIP_BAR_HEIGHT[1]
+        and rect.intersects(near)
+    ]
+    if not found:
+        return None
+    return max(found, key=lambda r: (r & near).get_area())
+
+
+def _chip_region(page: fitz.Page, bar: fitz.Rect) -> fitz.Rect:
+    """The whole chip: its bar, the caption inside it and the arrow beside it.
+
+    The arrow is a separate shape a few points away and it belongs to the chip
+    -- left behind, it would point at nothing.
+    """
+    region = fitz.Rect(bar)
+    band = fitz.Rect(
+        bar.x0 - CHIP_ARROW_REACH, bar.y0 - 2.0,
+        bar.x1 + CHIP_ARROW_REACH, bar.y1 + 2.0,
+    )
+    for drawing in page.get_drawings():
+        rect = fitz.Rect(drawing["rect"])
+        rect.normalize()
+        if rect.is_empty or rect.width > CHIP_ARROW_REACH:
+            continue
+        if band.contains(rect):
+            region |= rect
+    return region + (-1.0, -1.0, 1.0, 1.0)
+
+
+#: How much of the ring around a chip has to be one colour before that colour
+#: can be called the page's ground there. The rest is the ink of whatever the
+#: chip stands next to -- its own arrow, the code below it -- which is outside
+#: the cutting and stays exactly where it is. Measured at 94% on the printed
+#: drawing and 99% on the screen one.
+GROUND_SHARE = 0.90
+
+
+def _chip_ground(page: fitz.Page, region: fitz.Rect) -> tuple[float, ...] | None:
+    """The colour the page is behind a chip, or ``None`` if it is not one.
+
+    A chip's bar is a raster the export inlines, and MuPDF's redaction removes
+    images by xref -- an inlined one has none, so it survives every mode. What
+    does take it off is the redaction's own fill, and a fill is a patch unless
+    it is the colour that was already there.
+
+    So the ring around the chip is sampled and has to agree. It does: these
+    chips sit on the page's plain white, which the designer's own drawing
+    confirms -- the قياسي screen page carries three chips and nothing at all
+    where the fourth would be.
+
+    The build refuses to cut a chip whose ground it cannot name, because on a
+    coloured page a patch would be a patch.
+    """
+    pad = 3.0
+    outer = (region + (-pad, -pad, pad, pad)) & page.rect
+    pix = page.get_pixmap(dpi=150, clip=outer)
+    scale = pix.width / outer.width if outer.width else 0
+    if not scale:
+        return None
+    inside = (
+        (region.x0 - outer.x0) * scale, (region.y0 - outer.y0) * scale,
+        (region.x1 - outer.x0) * scale, (region.y1 - outer.y0) * scale,
+    )
+    counted: Counter = Counter()
+    for y in range(pix.height):
+        for x in range(pix.width):
+            if inside[0] <= x <= inside[2] and inside[1] <= y <= inside[3]:
+                continue
+            counted[pix.pixel(x, y)] += 1
+    if not counted:
+        return None
+    (colour, votes), = counted.most_common(1)
+    if votes < sum(counted.values()) * GROUND_SHARE:
+        return None
+    return tuple(channel / 255 for channel in colour)
+
+
+def _cut_out_chip(
+    doc: fitz.Document, page_index: int, spec: FieldSpec, page_rect: fitz.Rect
+) -> bool:
+    """Take one chip off the artwork and keep it, so it can be put back.
+
+    The cutting goes on a page of its own at the end of the background PDF and
+    the region is redacted out of the artwork -- bar, caption and arrow
+    together, which needs images and line art removed as well as text. Putting
+    it back is ``show_pdf_page``, which reproduces all three exactly; measured
+    against the artwork it replaced, nothing differs.
+
+    ``False`` where the chip cannot be found, and the page keeps it printed --
+    which is what it did before, so the booklet is never worse for this failing.
+    """
+    page = doc[page_index]
+    bar = _chip_bar(page, spec.rect.to_points(page_rect))
+    if bar is None:
+        return False
+    region = _chip_region(page, bar) & page_rect
+    if region.is_empty:
+        return False
+
+    # Copied before the page is cut, and through a scratch document because
+    # MuPDF refuses to place a page of a document onto a page of the same one.
+    # The redaction goes first: adding a page invalidates the handles already
+    # taken on this one.
+    scratch = fitz.open()
+    scratch.insert_pdf(doc, from_page=page_index, to_page=page_index)
+
+    ground = _chip_ground(page, region)
+    if ground is None:
+        scratch.close()
+        return False
+    # Filled with the page's own colour, not merely cleared: the bar is an
+    # inlined raster and no redaction mode removes one.
+    page.add_redact_annot(region, fill=ground)
+    page.apply_redactions(
+        images=fitz.PDF_REDACT_IMAGE_REMOVE,
+        graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
+    )
+
+    cutting = doc.new_page(width=region.width, height=region.height)
+    cutting.show_pdf_page(cutting.rect, scratch, 0, clip=region)
+    scratch.close()
+    spec.part = ChipPart(
+        page=doc.page_count - 1,
+        rect=NormRect.from_points(region, page_rect),
+    )
+    return True
 
 
 # ------------------------------------------------------------- the branding
@@ -2737,45 +3154,193 @@ def _capture_frame(
     for index, drawing in enumerate(found):
         if index in trailing:
             continue
-        items: list[FrameItem] = []
-        for item in drawing["items"]:
-            kind = item[0]
-            if kind == "l":
-                corners = [item[1], item[2]]
-            elif kind == "c":
-                corners = [item[1], item[2], item[3], item[4]]
-            elif kind == "re":
-                box = fitz.Rect(item[1])
-                corners = [
-                    fitz.Point(box.x0, box.y0), fitz.Point(box.x1, box.y0),
-                    fitz.Point(box.x1, box.y1), fitz.Point(box.x0, box.y1),
-                    fitz.Point(box.x0, box.y0),
-                ]
-                kind = "l"
-            else:
-                # A quad, or anything else the designer did not use here.
-                # Leaving the block alone beats redrawing it with a piece
-                # missing.
-                return None
-            flat: list[float] = []
-            for point in corners:
-                flat.extend((norm_x(point.x), norm_y(point.y)))
-            if kind == "l":
-                for start in range(0, len(flat) - 2, 2):
-                    items.append(FrameItem("l", flat[start : start + 4]))
-            else:
-                items.append(FrameItem(kind, flat))
-        paths.append(
-            FramePath(
-                items=items,
-                stroke=_ink(drawing.get("color")),
-                fill=_ink(drawing.get("fill")),
-                width=float(drawing.get("width") or 0.0),
-                closed=bool(drawing.get("closePath")),
-                row=row_of.get(index),
-            )
-        )
+        path = _frame_path_from(drawing, page_rect, row=row_of.get(index))
+        if path is None:
+            # A quad, or anything else the designer did not use here. Leaving
+            # the block alone beats redrawing it with a piece missing.
+            return None
+        paths.append(path)
     return TableFrame(rules=rules, paths=paths, bottom=bottom)
+
+
+def _frame_path_from(
+    drawing: dict, page_rect: fitz.Rect, *, row: int | None = None
+) -> FramePath | None:
+    """One drawn shape as the segments and the ink the file states it in.
+
+    Shared by the table frames and by the marks lifted off a chip: both are
+    recordings of the designer's own drawing, to be put back where they were,
+    and a second reading of the same thing would be a second way of drawing it.
+
+    ``None`` where the shape uses a segment this cannot record, so the caller
+    can leave the artwork alone rather than redraw it with a piece missing.
+    """
+    def norm_x(value: float) -> float:
+        return (value - page_rect.x0) / page_rect.width
+
+    def norm_y(value: float) -> float:
+        return (value - page_rect.y0) / page_rect.height
+
+    items: list[FrameItem] = []
+    for item in drawing["items"]:
+        kind = item[0]
+        if kind == "l":
+            corners = [item[1], item[2]]
+        elif kind == "c":
+            corners = [item[1], item[2], item[3], item[4]]
+        elif kind == "re":
+            box = fitz.Rect(item[1])
+            corners = [
+                fitz.Point(box.x0, box.y0), fitz.Point(box.x1, box.y0),
+                fitz.Point(box.x1, box.y1), fitz.Point(box.x0, box.y1),
+                fitz.Point(box.x0, box.y0),
+            ]
+            kind = "l"
+        else:
+            return None
+        flat: list[float] = []
+        for point in corners:
+            flat.extend((norm_x(point.x), norm_y(point.y)))
+        if kind == "l":
+            for start in range(0, len(flat) - 2, 2):
+                items.append(FrameItem("l", flat[start : start + 4]))
+        else:
+            items.append(FrameItem(kind, flat))
+    return FramePath(
+        items=items,
+        stroke=_ink(drawing.get("color")),
+        fill=_ink(drawing.get("fill")),
+        width=float(drawing.get("width") or 0.0),
+        closed=bool(drawing.get("closePath")),
+        row=row,
+    )
+
+
+#: A mark belongs to the value it stands beside, and no further away than this.
+#:
+#: Measured on معلومات التواصل, where the gap between a number's last digit and
+#: its icon is 14pt on one chip and 23pt on the other. Forty leaves room for the
+#: designer's own variation and stops well short of the next chip, whose value
+#: begins 55pt further along.
+MARK_REACH = 40.0
+
+#: The marks the designer draws beside a value, which have to come and go with
+#: it. ``group`` names the centred row the values sit in.
+#:
+#: Only معلومات التواصل, and only its two telephone numbers. «إذا واتساب not
+#: exist رقم التواصل align center and icon of واتساب disappear» is the whole
+#: requirement, and it cannot be met while the icon is ink on the page: the
+#: number was a field and the mark above it was not, so a seller with no
+#: WhatsApp printed a WhatsApp mark with nothing beside it.
+MARKED_CHIPS: dict[str, dict[str, Any]] = {
+    "contact": {
+        "group": "contact_numbers",
+        "keys": ("contact_whatsapp", "contact_phone"),
+    },
+    "contact_electronic": {
+        "group": "contact_numbers",
+        "keys": ("contact_whatsapp", "contact_phone"),
+    },
+    "contact_inperson": {
+        "group": "contact_numbers",
+        "keys": ("contact_whatsapp", "contact_phone"),
+    },
+}
+
+
+def _mark_beside(page: fitz.Page, box: fitz.Rect) -> list[dict]:
+    """The shapes the designer set immediately to the right of a value.
+
+    Each of these icons sits to the right of its own number — the handset at
+    x=268 belongs to the number ending at 254, the WhatsApp bubble at 422 to
+    the number ending at 399 — which is where a mark goes in a right-to-left
+    line. Bounded by ``MARK_REACH`` so a chip can never claim its neighbour's.
+    """
+    window = fitz.Rect(box.x1, box.y0 - 6.0, box.x1 + MARK_REACH, box.y1 + 6.0)
+    found = []
+    for drawing in page.get_drawings():
+        rect = fitz.Rect(drawing["rect"])
+        rect.normalize()
+        if rect.is_empty or rect.width > MARK_REACH:
+            continue
+        if window.contains(rect):
+            found.append(drawing)
+    return found
+
+
+def _lift_marks(
+    page: fitz.Page,
+    page_rect: fitz.Rect,
+    specs: list[FieldSpec],
+    plan: dict[str, Any],
+) -> None:
+    """Take each chip's mark off the artwork and hang it on its own field.
+
+    The same act as ``_erase_frame`` and for the same reason: the drawing is
+    going to be put back, by the renderer, when there is something for it to
+    stand beside. Verified the same way too — the redaction has to take exactly
+    the shapes that were captured and nothing else, which is what makes it safe
+    to do to every booklet.
+
+    A page named here and unable to give up its marks stops the build rather
+    than quietly keeping them. Silence would be the old behaviour back — both
+    icons printed, one of them over nothing — and it would arrive as a report
+    from the client rather than as a failure here. If a revised export moves an
+    icon further from its number than ``MARK_REACH``, widen the reach after
+    measuring; do not let the page through.
+    """
+    by_key = {s.key: s for s in specs}
+    caught: list[tuple[FieldSpec, list[dict]]] = []
+    for key in plan["keys"]:
+        spec = by_key.get(key)
+        if spec is None:
+            raise MapError(
+                f"page {page.number}: {key!r} carries a mark to lift and no "
+                f"rule made the field -- found {sorted(by_key)!r}"
+            )
+        marks = _mark_beside(page, spec.rect.to_points(page_rect))
+        if not marks:
+            raise MapError(
+                f"page {page.number}: no mark within {MARK_REACH:.0f}pt to the "
+                f"right of {key!r}. If the export moved it, measure the gap and "
+                f"widen MARK_REACH; the icon must not be left baked."
+            )
+        caught.append((spec, marks))
+
+    recorded: list[tuple[FieldSpec, list[FramePath]]] = []
+    for spec, marks in caught:
+        paths = [_frame_path_from(d, page_rect) for d in marks]
+        if any(path is None for path in paths):
+            raise MapError(
+                f"page {page.number}: {spec.key!r}'s mark uses a segment this "
+                f"cannot record, so it could not be put back after erasing"
+            )
+        recorded.append((spec, [p for p in paths if p is not None]))
+
+    wanted = [d for _, marks in caught for d in marks]
+    before = {_shape_id(d) for d in page.get_drawings()}
+    for _, marks in caught:
+        for drawing in marks:
+            rect = fitz.Rect(drawing["rect"])
+            rect.normalize()
+            page.add_redact_annot(rect + (-1, -1, 1, 1))
+    page.apply_redactions(
+        images=fitz.PDF_REDACT_IMAGE_NONE,
+        graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
+    )
+    gone = before - {_shape_id(d) for d in page.get_drawings()}
+    should_go = {_shape_id(d) for d in wanted}
+    if gone != should_go:
+        raise MapError(
+            f"page {page.number}: lifting the chip marks took {len(gone)} "
+            f"shapes off the artwork, not the {len(should_go)} captured -- "
+            f"{sorted(gone - should_go)!r} should have stayed and "
+            f"{sorted(should_go - gone)!r} should have gone"
+        )
+
+    for spec, paths in recorded:
+        spec.ornament = paths
+        spec.row_group = plan["group"]
 
 
 def _erase_frame(
@@ -3098,13 +3663,47 @@ def build(source_map: SourceMap, source: Path, out_dir: Path) -> dict:
             if frame is not None:
                 frames[index] = frame
 
+    # The screen drawings of the lot pages, appended after everything else so
+    # that adding them moves no page index a booklet already points at. They
+    # are pages of the document and fields are derived on them like any other,
+    # but they are not pages of the *booklet*: nothing lists them, and the only
+    # thing that ever asks for one is a render whose output is a screen.
+    screen_of: dict[int, int] = {}
+    if source_map.flavours:
+        stands_for = source_map.twin_of()
+        with fitz.open(source) as export:
+            for offset, twin in enumerate(source_map.flavours):
+                doc.insert_pdf(export, from_page=twin.index, to_page=twin.index)
+                screen_of[stands_for[offset]] = doc.page_count - 1
+
     derived = derive_document(doc)
+
+    # The mapped pages, then the screen twins at wherever they landed. Both go
+    # through the same derivation, the same rules and the same bake: a twin is
+    # a page of artwork like any other, and a page the build did not describe
+    # keeps the designer's sample data printed into it.
+    to_build: list[tuple[int, SourcePage]] = list(enumerate(source_map.pages))
+    to_build += [
+        (screen_of[stands_for[offset]], twin)
+        for offset, twin in enumerate(source_map.flavours)
+    ]
 
     specs: list[FieldSpec] = []
     table_cells: dict[int, list[fitz.Rect]] = defaultdict(list)
 
-    for position, mapped in enumerate(source_map.pages):
+    for position, mapped in to_build:
         page = doc[position]
+        # What this variant's auction does not have, off the page before
+        # anything is derived from it: a region nothing draws over is a region
+        # the bake will not clear, so it has to go now or it prints for ever.
+        if mapped.remove:
+            _erase_blocks(page, [
+                fitz.Rect(x0 * page_rect.width, y0 * page_rect.height,
+                          x1 * page_rect.width, y1 * page_rect.height)
+                for x0, y0, x1, y1 in mapped.remove
+            ])
+            candidates = derive_page(doc, position)
+            derived[position] = candidates
         candidates = derived.get(position, [])
 
         if mapped.role in (PageRole.LOT_TABLE, PageRole.RENT_TABLE):
@@ -3145,9 +3744,14 @@ def build(source_map: SourceMap, source: Path, out_dir: Path) -> dict:
         # why the sample codes stop printing: baking clears what a field draws
         # over, and until now nothing claimed them -- so every booklet went out
         # carrying the designer's own destinations, scannable.
-        named = LINK_PAGES.get(mapped.role)
-        if named:
-            specs.extend(_link_fields(page, position, page_rect, named))
+        if mapped.flavour == ELECTRONIC and mapped.role is PageRole.LOT:
+            # No codes on this drawing: the chips are clicked, and they stand
+            # in a column rather than a block.
+            specs.extend(_column_link_fields(page, position, page_rect))
+        else:
+            named = LINK_PAGES.get(mapped.role)
+            if named:
+                specs.extend(_link_fields(page, position, page_rect, named))
 
         if mapped.role is PageRole.LOT:
             for hint in suggest(candidates):
@@ -3167,6 +3771,17 @@ def build(source_map: SourceMap, source: Path, out_dir: Path) -> dict:
             specs.extend(
                 _apply_rules(mapped.rules, page, position, candidates, page_rect)
             )
+            # The marks the designer drew beside the two telephone numbers,
+            # lifted off the page so that a seller with no WhatsApp does not
+            # print a WhatsApp icon with nothing beside it. Done here, after
+            # the rules, because the marks are found from where the values are.
+            marked = MARKED_CHIPS.get(mapped.rules)
+            if marked:
+                _lift_marks(
+                    page, page_rect,
+                    [s for s in specs if s.page_index == position],
+                    marked,
+                )
 
         if mapped.role in (PageRole.LOT, PageRole.LOT_FEATURES, PageRole.BOUNDARIES):
             on_page = [s for s in specs if s.page_index == position]
@@ -3266,7 +3881,61 @@ def build(source_map: SourceMap, source: Path, out_dir: Path) -> dict:
         regions[spec.page_index].append((rect, spec.type))
     for page_index, cells in table_cells.items():
         regions[page_index].extend((cell, FieldType.TEXT) for cell in cells)
+    # A twin is only usable if it asks for exactly what the page it replaces
+    # asks for. The booklet points at the printed page and its values are keyed
+    # by field, so a twin that named one of them differently would print that
+    # value somewhere else -- or, worse, not at all.
+    #
+    # The برج drawings pass. The قياسي one does not: it is a later revision
+    # whose الأطوال block is four labelled rows where the printed page has two
+    # combined runs, so «شرقاً» and «غرباً» are read twice and the vocabulary
+    # pairs المساحة and الاستخدام with the الحدود column beside them. Rather
+    # than swap a page that would print the area where the north boundary goes,
+    # the twin is dropped and the printed drawing is used for both outputs.
+    refused: list[tuple[int, int, str]] = []
+    for at, index in sorted(screen_of.items()):
+        def named(page_index: int) -> list[str]:
+            return sorted(
+                s.key for s in specs
+                if s.page_index == page_index and s.type is FieldType.TEXT
+            )
+        mine, theirs = named(at), named(index)
+        if mine != theirs:
+            only_print = sorted(set(mine) - set(theirs))
+            only_screen = sorted(set(theirs) - set(mine))
+            repeated = sorted({k for k in theirs if theirs.count(k) > 1})
+            refused.append((at, index, (
+                f"asks for {only_screen or 'nothing'} that page {at} does not, "
+                f"is missing {only_print or 'nothing'}, and repeats {repeated}"
+            )))
+    for at, index, why in refused:
+        screen_of.pop(at, None)
+        # And its fields go with it. Nothing will ever draw that page, and a
+        # field on it is a field the editor has to reckon with -- two of them
+        # share a key, which is a thing a page is not allowed to do.
+        specs = [s for s in specs if s.page_index != index]
+        print(
+            f"  ! {source_map.slug}: the screen drawing on page {index} cannot "
+            f"stand in for page {at} -- it {why}. The printed drawing will be "
+            f"used for both outputs."
+        )
+
+    artwork_pages = doc.page_count
     report = bake_document(doc, dict(regions))
+
+    # The one chip a booklet does not always carry, cut off every drawing that
+    # has one. After the bake, so the cutting is taken from a page whose sample
+    # photograph has already gone: lifted before it, a chip 95pt wide dragged a
+    # 4032x2268 frame along with it and the cuttings came to 22MB apiece.
+    for spec in specs:
+        if spec.key != LEASE_CHIP_KEY or spec.type is not FieldType.LINK:
+            continue
+        if not _cut_out_chip(doc, spec.page_index, spec, page_rect):
+            raise MapError(
+                f"page {spec.page_index}: the {LEASE_CHIP_KEY!r} chip could "
+                f"not be found to cut out, so a property with no lease page "
+                f"would print a chip leading nowhere"
+            )
 
     capacity: dict[int, int] = defaultdict(int)
     for spec in specs:
@@ -3285,6 +3954,11 @@ def build(source_map: SourceMap, source: Path, out_dir: Path) -> dict:
         needs = mapped.needs_artwork or NEEDS_LIVE_TEXT.get(mapped.rules, "")
         options: dict[str, Any] = {"needs_artwork": needs} if needs else {}
         slot, layout, name = mapped.slot, mapped.layout, mapped.name
+        # Where the same page is drawn for a screen. Carried on the page it
+        # replaces rather than as a page of its own, because that is what it
+        # is: one page of the booklet with two drawings.
+        if position in screen_of:
+            options[f"page_for_{ELECTRONIC}"] = screen_of[position]
         if mapped.role is PageRole.COVER and mapped.slot == "cover":
             # The export's own cover. It holds the cover slot, so a booklet's
             # cover lands where the designer put it, but it is غلاف 1 drawn a
@@ -3357,9 +4031,20 @@ def build(source_map: SourceMap, source: Path, out_dir: Path) -> dict:
         "page_size": [round(page_rect.width, 2), round(page_rect.height, 2)],
         "design_page_height": round(page_rect.height, 2),
         "page_count": doc.page_count,
+        # How many of those are artwork. The rest are cuttings -- pieces of a
+        # page the renderer places back when the chip they came from is in the
+        # booklet -- and nothing is derived from one or points at one.
+        "artwork_pages": artwork_pages,
         "kept_source_pages": source_map.indices,
         "sections": [dataclasses.asdict(s) | {"kind": s.kind.value} for s in sections],
         "pages": pages,
+        # Which page stands in for which when the booklet is read rather than
+        # printed. Keyed by the page a booklet actually points at, so a project
+        # built before this existed keeps pointing where it always did and the
+        # substitution happens at render time or not at all.
+        "flavours": {
+            ELECTRONIC: {str(at): index for at, index in sorted(screen_of.items())}
+        },
         "fields": [_field_json(s) for s in specs],
         "bake": {
             "pages": report.pages,

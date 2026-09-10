@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 
 import fitz
 
 from .base import (
+    ChipPart,
     FieldSpec,
     FieldType,
     FrameItem,
@@ -36,6 +38,14 @@ class Template:
     sections: list[Section]
     design_page_height: float
     page_size: tuple[float, float]
+    #: Which page stands in for which, per output. The lot pages are drawn
+    #: twice -- once for print, once for a screen -- and a booklet points at the
+    #: printed one; ``{"electronic": {5: 22}}`` says where the other drawing is.
+    flavours: dict[str, dict[int, int]] = dataclass_field(default_factory=dict)
+
+    def pages_for(self, flavour: str) -> dict[int, int]:
+        """The substitutions this output asks for, empty for the default one."""
+        return self.flavours.get(flavour, {})
 
     def close(self) -> None:
         self.background.close()
@@ -126,6 +136,41 @@ def _ink_from(raw: object) -> list[float] | None:
     return [float(v) for v in raw]  # type: ignore[union-attr]
 
 
+def paths_from_json(raw: object) -> list[FramePath]:
+    """Drawn shapes on their own, without a table's rules around them.
+
+    A field's ornament is the same recording as a table frame's -- the
+    designer's own segments in the ink the file states them in -- with no rows
+    to close and so no ``rules`` and no ``bottom``.
+    """
+    return [
+        FramePath(
+            items=[
+                FrameItem(
+                    kind=str(i["kind"]),
+                    points=[float(v) for v in i["points"]],
+                )
+                for i in p.get("items", [])
+            ],
+            stroke=_ink_from(p.get("stroke")),
+            fill=_ink_from(p.get("fill")),
+            width=float(p.get("width", 0.0)),
+            closed=bool(p.get("closed", False)),
+        )
+        for p in (raw or [])  # type: ignore[union-attr]
+    ]
+
+
+def part_from_json(raw: dict | None) -> ChipPart | None:
+    if not raw:
+        return None
+    rect = raw["rect"]
+    return ChipPart(
+        page=int(raw["page"]),
+        rect=NormRect(rect["x"], rect["y"], rect["w"], rect["h"]),
+    )
+
+
 def frame_from_json(raw: dict | None) -> TableFrame | None:
     if not raw or not raw.get("rules"):
         return None
@@ -197,6 +242,9 @@ def _field_from(raw: dict) -> FieldSpec:
         clip_holes=raw.get("clip_holes") or [],
         columns=raw.get("columns") or [],
         origin=raw.get("origin", ""),
+        ornament=paths_from_json(raw.get("ornament")),
+        part=part_from_json(raw.get("part")),
+        row_group=raw.get("row_group", ""),
         table=_table_from(raw.get("table")),
     )
 
@@ -226,4 +274,8 @@ def load(directory: Path) -> Template:
         sections=[_section_from(s) for s in manifest["sections"]],
         design_page_height=float(manifest.get("design_page_height", height)),
         page_size=(float(width), float(height)),
+        flavours={
+            name: {int(at): int(index) for at, index in swap.items()}
+            for name, swap in (manifest.get("flavours") or {}).items()
+        },
     )

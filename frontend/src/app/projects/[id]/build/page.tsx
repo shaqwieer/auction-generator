@@ -23,9 +23,12 @@ import { Sections } from "@/components/builder/Sections";
 import {
   FieldList,
   PageEditor,
+  LogoSize,
   PhotoSlot,
+  sizeKey,
   askable,
   inReadingOrder,
+  markFields,
   photoFields,
   sectioned,
 } from "@/components/builder/PageEditor";
@@ -498,6 +501,42 @@ function Build() {
             />
           ))}
         </div>
+      ),
+    });
+  }
+
+  /*
+    How big the company's mark is drawn on this page.
+
+    The mark itself is not asked for here — it comes from the account, once, so
+    that a logo uploaded this afternoon appears on the booklet started this
+    morning. Its size is per page on purpose: the designer draws the selling
+    agent's lockup at eighteen different sizes through the booklet, sized to a
+    sample mark, and a real one is rarely that shape. Only the box moves; the
+    mark keeps its proportions inside it, so this cannot stretch a logo.
+  */
+  if (node && markFields(fields).length) {
+    panels.push({
+      id: "marks",
+      label: "حجم الشعار",
+      body: (
+        <>
+          <div className="grid gap-2 p-4">
+            {markFields(fields).map((field) => (
+              <LogoSize
+                key={field.id}
+                field={field}
+                value={draft[sizeKey(field)] ?? ""}
+                disabled={busy}
+                onChange={(value) => edit(sizeKey(field), value)}
+              />
+            ))}
+          </div>
+          <p className="border-t border-line px-4 py-3 text-xs text-muted-soft">
+            نسبة من المقاس الذي رسمه المصمّم لهذه الصفحة. اتركه فارغًا ليُطبع كما
+            في التصميم.
+          </p>
+        </>
       ),
     });
   }

@@ -44,6 +44,29 @@ BACKDROP_COVERAGE = 0.92
 #: the output page it jumps to, which only the composer knows.
 GOTO_PREFIX = "__goto_"
 
+#: How big a mark is drawn, as a percentage of the box the designer drew for it.
+#:
+#: Written «width×height», either half optional, and named for the page it
+#: applies to — the same lockup is drawn at eighteen sizes through the booklet,
+#: and a company whose mark is wider than the guide's sample wants room on the
+#: cover that it does not want in a footer.
+#:
+#: The page is in the key because a property's values are kept on its record and
+#: every page of that property reads them: without it, sizing the mark on صفحة
+#: العقار would have sized the one on مميزات العقار too, which is not what «each
+#: logo» means.
+#:
+#: Only ever the box. The mark keeps its own proportions inside it
+#: (``preserve_aspect``), so this cannot stretch a logo however it is typed --
+#: which is why it is offered for a mark and not for a photograph, where the
+#: box is the frame the designer drew and filling it is the point.
+SIZE_PREFIX = "__size_"
+
+#: A box may be shrunk to a tenth or grown tenfold and no further. Wide enough
+#: for any real mark, and narrow enough that a stray keystroke cannot draw a
+#: logo across the whole booklet.
+SIZE_LIMITS = (0.1, 10.0)
+
 #: The booklet's own facts, for a field whose ``default_value`` names one --
 #: the auction and the platform are typed on the auction-info page and belong
 #: to the whole issue, not to the page that happens to print them again. Kept
@@ -67,6 +90,28 @@ def _resolve(template: str, booklet: dict) -> str:
     return _SLOT.sub(lambda m: str(booklet.get(m.group(1)) or "").strip(), template)
 
 
+def _joined(prefix: str, inner: str) -> str:
+    """The fixed wording and the value, without saying one word twice.
+
+    They are one sentence, and the join is where it can go wrong. خطوات
+    المشاركة reads «إختيار مزاد …», and the booklet it is in is «مزاد أعيان
+    حائل» — so the caption printed «إختيار مزاد مزاد أعيان حائل». The
+    designer's own sample avoided it by writing the bare name between the
+    brackets, which is a thing a person does without thinking and a fallback
+    cannot: the name it falls back to is the whole title, because that is the
+    fact the booklet holds.
+
+    Whole words only, and only across the join, so a value that genuinely
+    begins with the word before it keeps it wherever it is not a repetition of
+    the caption's own last word.
+    """
+    head = prefix.split()
+    tail = inner.split()
+    if head and tail and head[-1] == tail[0]:
+        return f"{prefix}{inner.split(maxsplit=1)[1]}" if len(tail) > 1 else prefix
+    return f"{prefix}{inner}"
+
+
 def _caption(spec: FieldSpec, value: str, booklet: dict) -> str:
     """What this field actually prints: fixed wording around a typed value.
 
@@ -77,6 +122,8 @@ def _caption(spec: FieldSpec, value: str, booklet: dict) -> str:
     inner = value or _resolve(spec.default_value, booklet)
     if not spec.prefix and not spec.suffix:
         return inner
+    if spec.prefix:
+        return f"{_joined(spec.prefix, inner)}{spec.suffix}"
     # The fixed halves print even with nothing between them. A caption that
     # vanished because its one variable word was blank would take the
     # designer's sentence with it, and the page was cleared to make room for it.
@@ -88,11 +135,47 @@ def _is_backdrop(rect: fitz.Rect, page_rect: fitz.Rect) -> bool:
     return bool(area) and (rect & page_rect).get_area() / area >= BACKDROP_COVERAGE
 
 
-class PyMuPDFOverlayRenderer:
-    """Composites values onto baked background pages."""
+def _resized(rect: fitz.Rect, setting: str) -> fitz.Rect:
+    """The box grown or shrunk about its own centre, per «width×height».
 
-    def __init__(self, registry: FontRegistry | None = None) -> None:
+    Either half may be left out — «120» is 120% of the width and the height
+    untouched, «×80» the other way about. Anything that is not a number is
+    ignored rather than refused: this is a value typed into a box on a page,
+    and a half-typed number must not blank the mark being sized.
+    """
+    width, _, height = str(setting).partition("x")
+    factors: list[float] = []
+    for raw in (width, height):
+        try:
+            factor = float(raw.strip().rstrip("%")) / 100.0
+        except ValueError:
+            factor = 1.0
+        low, high = SIZE_LIMITS
+        factors.append(min(max(factor, low), high))
+    grow_x = rect.width * (factors[0] - 1.0) / 2
+    grow_y = rect.height * (factors[1] - 1.0) / 2
+    return rect + (-grow_x, -grow_y, grow_x, grow_y)
+
+
+class PyMuPDFOverlayRenderer:
+    """Composites values onto baked background pages.
+
+    ``image_dpi`` is the resolution photographs are resampled *for*. It is the
+    print resolution unless a caller says otherwise, and the builder does: its
+    page is rastered at about 110dpi, so resampling a phone frame to 300 for it
+    is work thrown away a moment later. What the resolution is *judged* against
+    does not move with it — a photograph too coarse to print says so in the
+    preview, which is where it is worth hearing.
+    """
+
+    def __init__(
+        self,
+        registry: FontRegistry | None = None,
+        *,
+        image_dpi: int | None = None,
+    ) -> None:
         self._registry = registry or brand_registry()
+        self._image_dpi = image_dpi
 
     # -- public API ----------------------------------------------------------
 
@@ -139,8 +222,12 @@ class PyMuPDFOverlayRenderer:
             else 1.0
         )
         specs = plan.fields_for(instance.template_page_index)
+        shifts = self._row_shifts(page, specs, instance)
         for spec in specs:
-            self._render_field(page, plan, instance, spec, scale, issues, jumps)
+            self._render_field(
+                page, plan, instance, spec, scale, issues, jumps,
+                shift=shifts.get(spec.key, 0.0),
+            )
 
         # A composed table page carries its rows in ``__rows__``. If the template
         # defines no table field to draw them, the page comes out as bare artwork
@@ -164,6 +251,129 @@ class PyMuPDFOverlayRenderer:
                     )
                 )
 
+    def _will_draw(self, instance: PageInstance, spec: FieldSpec) -> bool:
+        """Whether this field puts anything on the page at all.
+
+        A value, or the wording a caption prints around one, or the fact it
+        falls back to. Asked before anything is drawn, because a row cannot
+        know where to centre until it knows which of its members are in it.
+
+        Kept in step with ``_render_field`` case by case, deliberately: this
+        decides whether a field's own mark is drawn, so the two answering
+        differently would print a mark over nothing, or leave one off a value
+        that is there. Only text takes the caption path there, so only text
+        takes it here.
+        """
+        raw = instance.values.get(spec.key)
+        value = "" if raw is None else str(raw).strip()
+        if value:
+            return True
+        if spec.type is FieldType.LINK:
+            return instance.values.get(f"{GOTO_PREFIX}{spec.key}") is not None
+        if spec.type is not FieldType.TEXT:
+            return False
+        booklet = instance.values.get(DEFAULTS_KEY) or {}
+        return bool(_caption(spec, "", booklet).strip())
+
+    def _extent(self, page: fitz.Page, spec: FieldSpec) -> fitz.Rect:
+        """The room this field takes on the page: its box and its own mark."""
+        box = spec.rect.to_points(page.rect)
+        for path in spec.ornament:
+            xs = [
+                page.rect.x0 + x * page.rect.width
+                for item in path.items
+                for x in item.points[::2]
+            ]
+            ys = [
+                page.rect.y0 + y * page.rect.height
+                for item in path.items
+                for y in item.points[1::2]
+            ]
+            if xs and ys:
+                # By hand, not by unioning point-rects: a rect with no width is
+                # empty, and ``Rect.__or__`` ignores an empty rect.
+                box = fitz.Rect(
+                    min(box.x0, *xs), min(box.y0, *ys),
+                    max(box.x1, *xs), max(box.y1, *ys),
+                )
+        return box
+
+    def _row_shifts(
+        self,
+        page: fitz.Page,
+        specs: list[FieldSpec],
+        instance: PageInstance,
+    ) -> dict[str, float]:
+        """How far each member of a centred row moves to close the gaps.
+
+        معلومات التواصل draws two telephone numbers side by side and centres
+        the pair on the page. A seller with no WhatsApp leaves one of them
+        empty, and the other stayed where it was — off to one side of a space
+        drawn for two, which is «رقم التواصل align center» not happening.
+
+        The row keeps the centre the designer gave it: the shift is measured
+        between the middle of everything the row was drawn with and the middle
+        of what is left. A full row therefore moves not at all, which is what
+        makes this safe to apply to every booklet.
+        """
+        groups: dict[str, list[FieldSpec]] = {}
+        for spec in specs:
+            if spec.row_group:
+                groups.setdefault(spec.row_group, []).append(spec)
+
+        shifts: dict[str, float] = {}
+        for members in groups.values():
+            drawing = [s for s in members if self._will_draw(instance, s)]
+            if not drawing or len(drawing) == len(members):
+                continue
+            whole = [self._extent(page, s) for s in members]
+            live = [self._extent(page, s) for s in drawing]
+            drawn_centre = (
+                min(b.x0 for b in whole) + max(b.x1 for b in whole)
+            ) / 2
+            live_centre = (
+                min(b.x0 for b in live) + max(b.x1 for b in live)
+            ) / 2
+            for spec in drawing:
+                shifts[spec.key] = drawn_centre - live_centre
+        return shifts
+
+    def _draw_ornament(self, page: fitz.Page, spec: FieldSpec, shift: float) -> None:
+        """Put the designer's own mark back beside the value it belongs to.
+
+        Lifted off the artwork at build time so that it can be absent; drawn
+        here from the segments and the ink the file stated, so a booklet that
+        has both numbers is the page the designer drew.
+        """
+        if not spec.ornament:
+            return
+        shape = page.new_shape()
+        for path in spec.ornament:
+            for item in path.items:
+                run = [
+                    fitz.Point(
+                        page.rect.x0 + x * page.rect.width + shift,
+                        page.rect.y0 + y * page.rect.height,
+                    )
+                    for x, y in zip(
+                        item.points[::2], item.points[1::2], strict=True
+                    )
+                ]
+                if item.kind == "c" and len(run) == 4:
+                    shape.draw_bezier(*run)
+                else:
+                    for start, end in pairwise(run):
+                        shape.draw_line(start, end)
+            # ``None`` is not black: it is how a shape says it is filled but
+            # not stroked, or stroked but not filled.
+            shape.finish(
+                color=tuple(path.stroke) if path.stroke else None,
+                fill=tuple(path.fill) if path.fill else None,
+                width=path.width,
+                closePath=path.closed,
+            )
+        shape.commit()
+
     def _render_field(
         self,
         page: fitz.Page,
@@ -173,9 +383,33 @@ class PyMuPDFOverlayRenderer:
         scale: float,
         issues: list[RenderIssue],
         jumps: list[tuple[int, fitz.Rect, int]],
+        shift: float = 0.0,
     ) -> None:
         row = instance.record_index
-        rect = spec.rect.to_points(page.rect)
+        rect = spec.rect.to_points(page.rect) + (shift, 0, shift, 0)
+        drawing = self._will_draw(instance, spec)
+        if spec.ornament and drawing:
+            self._draw_ornament(page, spec, shift)
+        # The chip this field is printed as, where the build cut it off the
+        # artwork so that it could be absent. «معلومات الإيجار» leads to a page
+        # the booklet only sometimes contains, and a chip leading to a page
+        # that is not there is worse than no chip.
+        if spec.part is not None and drawing:
+            page.show_pdf_page(
+                spec.part.rect.to_points(page.rect) + (shift, 0, shift, 0),
+                plan.background,
+                spec.part.page,
+            )
+
+        # A mark drawn at whatever size this page wants it. Only a mark: a
+        # photograph fills the frame the designer drew, and the frame is not
+        # the client's to resize.
+        if spec.type is FieldType.IMAGE and spec.preserve_aspect:
+            setting = instance.values.get(
+                f"{SIZE_PREFIX}{spec.page_index}_{spec.key}"
+            )
+            if setting:
+                rect = _resized(rect, str(setting))
 
         if spec.type is FieldType.TABLE:
             self._draw_table(page, plan, instance, spec, scale, issues)
@@ -297,6 +531,7 @@ class PyMuPDFOverlayRenderer:
             image = prepare(
                 blob,
                 rect,
+                output_dpi=self._image_dpi,
                 cover=not spec.preserve_aspect,
                 clip=spec.clip,
                 holes=spec.clip_holes,

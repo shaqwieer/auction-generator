@@ -388,3 +388,101 @@ export function PhotoSlot({
     </div>
   );
 }
+
+/**
+ * The marks a page carries, which the booklet fills in from the account.
+ *
+ * `photoFields` deliberately leaves them out: nobody uploads a company logo per
+ * page, because it is set once in إعدادات الشركة. Its *size* is another matter
+ * — the same lockup is drawn at eighteen sizes through the booklet, and a
+ * company whose mark is squarer than the guide's sample wants room on the cover
+ * that it does not want in a footer.
+ */
+export function markFields(fields: TemplateFieldOut[]): TemplateFieldOut[] {
+  return fields.filter(
+    (field) =>
+      field.type === "image" && field.preserve_aspect && BRANDING.has(field.key),
+  );
+}
+
+/**
+ * Where a mark's size is stored.
+ *
+ * Named for the page as well as the field. A property's values are kept on its
+ * record and every page of that property reads them, so a key without the page
+ * in it would size the mark on صفحة العقار and on مميزات العقار together.
+ */
+export const SIZE_PREFIX = "__size_";
+
+export function sizeKey(field: TemplateFieldOut): string {
+  return `${SIZE_PREFIX}${field.page_index}_${field.key}`;
+}
+
+/** `"120x90"` -> `["120", "90"]`; anything unset reads as 100. */
+export function readSize(value: string): [string, string] {
+  const [width = "", height = ""] = (value || "").split("x");
+  return [width.trim(), height.trim()];
+}
+
+/**
+ * How big the mark is drawn on this page, as a percentage of the box the
+ * designer drew for it.
+ *
+ * Two numbers, not one, because that is what was asked for — but they can only
+ * ever change the *box*. The mark keeps its own proportions inside it, so
+ * neither number can stretch a logo; a wider box simply gives it more room to
+ * be as large as its height allows. Empty means untouched, which is what the
+ * artwork does.
+ */
+export function LogoSize({
+  field,
+  value,
+  disabled,
+  onChange,
+}: {
+  field: TemplateFieldOut;
+  value: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+}) {
+  const [width, height] = readSize(value);
+  const set = (next: [string, string]) => {
+    const [w, h] = next.map((part) => part.trim());
+    onChange(w || h ? `${w}x${h}` : "");
+  };
+  return (
+    <div className="border border-line p-3">
+      <span className="mb-2 block text-sm">{field.label || field.key}</span>
+      <div className="grid grid-cols-2 gap-3">
+        <Labelled label="العرض ٪">
+          <input
+            type="number"
+            min={10}
+            max={1000}
+            step={5}
+            placeholder="100"
+            value={width}
+            disabled={disabled}
+            dir="ltr"
+            className="mono"
+            onChange={(event) => set([event.target.value, height])}
+          />
+        </Labelled>
+        <Labelled label="الارتفاع ٪">
+          <input
+            type="number"
+            min={10}
+            max={1000}
+            step={5}
+            placeholder="100"
+            value={height}
+            disabled={disabled}
+            dir="ltr"
+            className="mono"
+            onChange={(event) => set([width, event.target.value])}
+          />
+        </Labelled>
+      </div>
+    </div>
+  );
+}

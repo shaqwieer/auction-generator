@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import uuid
 import zipfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -103,14 +104,53 @@ def _assets_for(
     return out
 
 
-def assets_for_project(session: Session, project: Project) -> dict[str, bytes]:
-    """Every photograph this project refers to, loaded once.
+class LazyAssets(Mapping[str, bytes]):
+    """The photographs a render *may* ask for, read only when it asks.
+
+    The builder redraws one page per keystroke, and every redraw used to read
+    every photograph in the booklet: a twenty-property issue is twenty phone
+    frames, several hundred megabytes off disk, to draw a page carrying one of
+    them. Worse, it happened before the preview cache was consulted, so even a
+    page that was already rastered paid for the lot.
+
+    The names are known up front — that is what the cache key is built from and
+    what preflight reports missing — so only the bytes are deferred. A file that
+    has gone from storage is absent rather than an error, which is what the
+    eager loader did too: the renderer reports it as a missing image and the
+    page still draws.
+    """
+
+    def __init__(self, session: Session, project: Project, names: set[str]) -> None:
+        self._session = session
+        self._project = project
+        self._names = frozenset(names)
+        self._loaded: dict[str, bytes] = {}
+
+    def __iter__(self):
+        return iter(sorted(self._names))
+
+    def __len__(self) -> int:
+        return len(self._names)
+
+    def __getitem__(self, name: str) -> bytes:
+        if name not in self._names:
+            raise KeyError(name)
+        if name not in self._loaded:
+            found = _assets_for(self._session, self._project, {name})
+            if name not in found:
+                raise KeyError(name)
+            self._loaded[name] = found[name]
+        return self._loaded[name]
+
+
+def assets_for_project(session: Session, project: Project) -> Mapping[str, bytes]:
+    """Every photograph this project refers to, read when it is drawn.
 
     Public because the builder's preview draws through the same renderer over
     the same artwork, and so needs the same images.
     """
     records = [dict(r.values or {}) for r in project.records]
-    return _assets_for(session, project, _referenced_assets(project, records))
+    return LazyAssets(session, project, _referenced_assets(project, records))
 
 
 def preflight(session: Session, project: Project) -> Preflight:
@@ -337,7 +377,12 @@ def _render_merged(
     plan = RenderPlan(
         background=background,
         fields=fields,
-        pages=pages,
+        pages=template_service.drawn_as(
+            pages,
+            template_service.pages_for_output(
+                project.template, project.output_flavour
+            ),
+        ),
         assets=assets,
         design_page_height=project.template.design_page_height,
     )
@@ -382,7 +427,12 @@ def _render_per_record(
             plan = RenderPlan(
                 background=background,
                 fields=fields,
-                pages=pages,
+                pages=template_service.drawn_as(
+                    pages,
+                    template_service.pages_for_output(
+                        project.template, project.output_flavour
+                    ),
+                ),
                 assets=assets,
                 design_page_height=project.template.design_page_height,
             )

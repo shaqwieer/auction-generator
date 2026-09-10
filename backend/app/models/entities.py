@@ -304,6 +304,17 @@ class TemplateField(Base):
     # shapes drawn over it. See FieldSpec.clip and FieldSpec.clip_holes.
     clip: Mapped[list | None] = mapped_column(JSONB)
     clip_holes: Mapped[list | None] = mapped_column(JSONB)
+    # The designer's own mark beside the value, and the row it is centred in.
+    # See FieldSpec.ornament / FieldSpec.row_group: an icon that belongs to a
+    # value has to be able to go when the value does.
+    ornament: Mapped[list | None] = mapped_column(JSONB)
+    # A cutting of the artwork -- the chip's bar, caption and arrow together --
+    # and where it goes back. See FieldSpec.part: «معلومات الإيجار» is printed
+    # only where the lease page it leads to is.
+    part: Mapped[dict | None] = mapped_column(JSONB)
+    row_group: Mapped[str] = mapped_column(
+        String(40), default="", nullable=False, server_default=""
+    )
     origin: Mapped[str] = mapped_column(String(200), default="", nullable=False)
 
     # Fixed wording printed around the value, and what prints when nothing has

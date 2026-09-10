@@ -186,10 +186,26 @@ def _merged(
 DEFAULTS_KEY = "__booklet__"
 
 #: Facts that belong to the issue rather than to any one page. They are typed
-#: once -- on the auction-info page -- and other pages print them again; the
-#: steps page names both, and asking for them a third time there would be
-#: asking twice for one fact.
-BOOKLET_KEYS: tuple[str, ...] = ("auction_title", "platform_name")
+#: once -- wherever the client happens to meet them first -- and every other
+#: page that names them prints what was typed.
+#:
+#: The booklet says each of these more than once. The auction is named on the
+#: cover, on معلومات المزاد and again in خطوات المشاركة; the date, the time, the
+#: venue and the platform are on معلومات المزاد and on معلومات التواصل both.
+#: Asking on every page was asking several times for one fact and letting the
+#: answers disagree -- «اسم المزاد is exist on a lot of pages».
+#:
+#: Nothing is hidden: a field still stands on every page that prints it, and
+#: shows the inherited value as its placeholder, so the client can see what
+#: will print and can still say something different on one page if the design
+#: wants it. It is the *asking* that happens once.
+BOOKLET_KEYS: tuple[str, ...] = (
+    "auction_title",
+    "platform_name",
+    "auction_date",
+    "auction_time",
+    "location",
+)
 
 
 def booklet_facts(

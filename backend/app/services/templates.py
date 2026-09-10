@@ -9,6 +9,7 @@ directions here means the renderer never learns about SQLAlchemy.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import fitz
@@ -28,12 +29,13 @@ from app.rendering.base import (
     FieldSpec,
     FieldType,
     NormRect,
+    PageInstance,
     SectionKind,
     TableColumn,
     TableSpec,
 )
 from app.rendering.compose import Section
-from app.rendering.manifest import frame_from_json
+from app.rendering.manifest import frame_from_json, part_from_json, paths_from_json
 from app.rendering.shaping import Align, Fit, VAlign
 
 
@@ -170,6 +172,9 @@ def import_template(
                 preserve_aspect=bool(raw.get("preserve_aspect", False)),
                 clip=raw.get("clip") or None,
                 clip_holes=raw.get("clip_holes") or None,
+                ornament=raw.get("ornament") or None,
+                row_group=raw.get("row_group", ""),
+                part=raw.get("part") or None,
                 origin=raw.get("origin", ""),
                 prefix=raw.get("prefix", ""),
                 suffix=raw.get("suffix", ""),
@@ -246,6 +251,9 @@ def field_to_spec(row: TemplateField) -> FieldSpec:
         preserve_aspect=row.preserve_aspect,
         clip=list(row.clip or []),
         clip_holes=list(row.clip_holes or []),
+        ornament=paths_from_json(row.ornament),
+        row_group=row.row_group,
+        part=part_from_json(row.part),
         origin=row.origin,
         prefix=row.prefix,
         suffix=row.suffix,
@@ -268,16 +276,74 @@ def section_to_spec(row: TemplateSection) -> Section:
 
 #: The two things a booklet can be. On paper a link has to be a code somebody
 #: scans; on screen a code is useless and the chip should simply be clickable.
-#: The pages are the same either way -- only which of the two fields sitting on
-#: each chip gets drawn changes.
+#: The designer drew the lot pages for both -- see ``pages_for_output``.
 PRINT = "print"
 ELECTRONIC = "electronic"
 
+#: How a chip's minted code is named beside the address it stands for.
+#: Spelled here as well as in the build script because this is the only thing
+#: that can tell a chip with two halves from a chip with one.
+QR_PREFIX = "__qr_"
+
 
 def for_output(fields: list[FieldSpec], flavour: str) -> list[FieldSpec]:
-    """Drop the half of each link chip this output does not use."""
-    unwanted = FieldType.LINK if flavour == PRINT else FieldType.QR
-    return [f for f in fields if f.type is not unwanted]
+    """Drop the half of each link chip this output does not use.
+
+    Only where there are two halves. «معلومات الإيجار» leads to a page of the
+    booklet rather than out to the web, so it is minted no code and is a LINK
+    and nothing else — dropping it on paper dropped the only thing that knew
+    the chip existed, and with the chip now cut off the artwork that meant a
+    printed booklet with a gap where it should be.
+    """
+    if flavour != PRINT:
+        return [f for f in fields if f.type is not FieldType.QR]
+    coded = {
+        f.key[len(QR_PREFIX):]
+        for f in fields
+        if f.type is FieldType.QR and f.key.startswith(QR_PREFIX)
+    }
+    return [
+        f for f in fields
+        if f.type is not FieldType.LINK or f.key not in coded
+    ]
+
+
+def pages_for_output(template: Template, flavour: str) -> dict[int, int]:
+    """Which page each page of the booklet is actually drawn as.
+
+    The designer drew the lot pages twice — «تفاصيل العقار (نسخة الطباعة)» with
+    a code under every chip and the chips in a 2x2 block, and «(نسخة
+    إلكترونية)» with no codes and the chips in a single column. A booklet
+    points at the printed one always, because that is the page it was built
+    with and a project freezes the pages a property occupies; which drawing is
+    used is a fact about the *output*, settled here rather than in the plan.
+
+    Empty for print, which is the drawing the artwork is.
+    """
+    if flavour == PRINT:
+        return {}
+    key = f"page_for_{flavour}"
+    return {
+        page.page_index: int(page.options[key])
+        for page in template.pages
+        if page.options and page.options.get(key) is not None
+    }
+
+
+def drawn_as(pages: list[PageInstance], swap: dict[int, int]) -> list[PageInstance]:
+    """The same pages, each pointed at the drawing this output wants.
+
+    A new list of new instances: the caller's own are the plan's, and a preview
+    that mutated them would leave the wrong page number behind on the next
+    request that reused the row.
+    """
+    if not swap:
+        return pages
+    return [
+        replace(page, template_page_index=swap.get(page.template_page_index,
+                                                   page.template_page_index))
+        for page in pages
+    ]
 
 
 def specs_for(template: Template) -> tuple[list[FieldSpec], list[Section]]:

@@ -173,6 +173,11 @@ class TemplateFieldOut(ORM):
     #: The shape the box is drawn as, where it is not a rectangle.
     clip: list[list[float]] | None = None
     clip_holes: list[list[list[float]]] | None = None
+    #: The designer's mark beside this value, and the centred row it sits in.
+    ornament: list[dict[str, Any]] | None = None
+    row_group: str = ""
+    #: A cutting of the artwork this field draws back when it is in play.
+    part: dict[str, Any] | None = None
     #: Fixed wording printed around the value, and what prints without one.
     #: Read as well as written, per the note above: the steps page's captions
     #: are mostly prefix, and an editor save that could not see them would
@@ -299,6 +304,9 @@ class TemplateFieldUpdate(BaseModel):
     preserve_aspect: bool = False
     clip: list[list[float]] | None = None
     clip_holes: list[list[list[float]]] | None = None
+    ornament: list[dict[str, Any]] | None = None
+    row_group: str = ""
+    part: dict[str, Any] | None = None
     prefix: str = ""
     suffix: str = ""
     default_value: str = ""

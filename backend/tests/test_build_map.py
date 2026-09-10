@@ -214,10 +214,16 @@ def test_nothing_is_borrowed_now_that_the_electronic_export_exists():
 
 
 def test_the_electronic_pages_come_from_the_electronic_export():
-    """And the rest of it still comes from the hybrid: it has no برج layout."""
+    """And the rest of it still comes from the hybrid: it has no برج layout.
+
+    Two pages, not three. معلومات التواصل came back to the هجين drawing:
+    the guide draws one معلومات التواصل for all three auctions and the
+    electronic export's own is a later revision of it that carries a single
+    telephone number where the guide's card carries two.
+    """
     electronic = BY_SLUG["auction_infath_electronic"]
     grafted = {p.role for p in electronic.pages if p.source}
-    assert grafted == {PageRole.AUCTION_INFO, PageRole.TERMS, PageRole.CONTACT}
+    assert grafted == {PageRole.AUCTION_INFO, PageRole.TERMS}
     assert electronic.extra_sources == ("مزاد الكتروني",)
     # Every grafted page states where that export prints the agent's lockup;
     # nothing else finds it, so a page without one would print يازي's mark.
@@ -437,7 +443,15 @@ def test_source_is_kept_and_page_aligned(built):
     source = built["_dir"] / "source.pdf"
     assert source.exists(), "publish and the suggestion overlay both read this"
     with fitz.open(source) as doc:
-        assert doc.page_count == built["page_count"]
+        # The artwork pages, which is every page a field sits on. The cuttings
+        # the build takes of the معلومات الإيجار chip are not artwork: they
+        # are pieces of it, kept in the background so the renderer can put one
+        # back, and nothing is ever derived from them.
+        assert doc.page_count == built["artwork_pages"]
+        assert built["artwork_pages"] <= built["page_count"]
+        assert max(
+            f["page_index"] for f in built["fields"]
+        ) < built["artwork_pages"], "every field sits on a page of the artwork"
 
 
 def test_background_bytes_stay_within_budget(built):
@@ -699,7 +713,11 @@ YAZI_SALE = [
 #: Copy on those same pages that is the design and must be left alone.
 ELECTRONIC_DESIGN = {
     PageRole.TERMS: ["التسجيل في منصة المزاد الإلكتروني", "مركز الإسناد"],
-    PageRole.CONTACT: ["يقام المزاد إلكترونيا", "للتواصل والاستفسار"],
+    # معلومات التواصل is the هجين drawing now, and «يقام المزاد» is
+    # outlined on it -- printed, and invisible to extraction, which is the case
+    # the page map warns about. «للتواصل والاستفسار» is live text and is
+    # what can actually be checked.
+    PageRole.CONTACT: ["للتواصل والاستفسار"],
 }
 
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import OrderedDict
+from collections.abc import Mapping
 from threading import Lock
 from typing import Any
 
@@ -46,7 +47,7 @@ def cache_key(
     project: Project,
     instance: PageInstance,
     dpi: int,
-    assets: dict[str, bytes],
+    assets: Mapping[str, bytes],
     omit: str | None = None,
 ) -> str:
     payload = json.dumps(
@@ -100,7 +101,7 @@ def render_page(
     instance: PageInstance,
     *,
     dpi: int = 96,
-    assets: dict[str, bytes] | None = None,
+    assets: Mapping[str, bytes] | None = None,
     omit: str | None = None,
 ) -> tuple[bytes, str, bool]:
     """Draw one page. Returns ``(png, key, was_cached)``.
@@ -117,6 +118,13 @@ def render_page(
     """
     dpi = max(MIN_DPI, min(int(dpi), MAX_DPI))
     payload = assets or {}
+    # Which drawing of this page the output asks for. Done before the key is
+    # taken, so a page and its screen twin are separate entries rather than one
+    # entry two flavours disagree about.
+    instance = template_service.drawn_as(
+        [instance],
+        template_service.pages_for_output(project.template, project.output_flavour),
+    )[0]
     key = cache_key(project, instance, dpi, payload, omit)
 
     hit = cached(key)
@@ -139,7 +147,8 @@ def render_page(
             assets=payload,
             design_page_height=project.template.design_page_height,
         )
-        result = PyMuPDFOverlayRenderer().render(plan)
+        # Photographs are resampled for this raster, not for print.
+        result = PyMuPDFOverlayRenderer(image_dpi=dpi).render(plan)
     finally:
         background.close()
 
@@ -151,7 +160,9 @@ def render_page(
 
 
 def issues_for(
-    project: Project, instance: PageInstance, assets: dict[str, bytes] | None = None
+    project: Project,
+    instance: PageInstance,
+    assets: Mapping[str, bytes] | None = None,
 ) -> list[dict[str, Any]]:
     """What the renderer would complain about on this page, without rasterising.
 
@@ -160,12 +171,16 @@ def issues_for(
     """
     fields, _ = template_service.specs_for(project.template)
     fields = template_service.for_output(fields, project.output_flavour)
+    pages = template_service.drawn_as(
+        [instance],
+        template_service.pages_for_output(project.template, project.output_flavour),
+    )
     background = template_service.open_background(project.template)
     try:
         plan = RenderPlan(
             background=background,
             fields=fields,
-            pages=[instance],
+            pages=pages,
             assets=assets or {},
             design_page_height=project.template.design_page_height,
         )

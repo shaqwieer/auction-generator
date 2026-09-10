@@ -61,6 +61,11 @@ EXECUTION = "رقم طلب التنفيذ"  # on every lot page and nowhere else
 STANDARD = "وصف العقار"        # the قياسي heading; outlined on the برج page
 CHIP = "تغلق المزايدة"         # the electronic closing-time chip
 CONTACT = "للتواصل والاستفسار"
+
+#: The name of the screen output, spelled once. A page carrying it is the
+#: designer's own drawing of the same page for a booklet nobody prints: no code
+#: under a chip, and the four chips in a column rather than a block.
+ELECTRONIC = "electronic"
 STEPS = "خطوات المشاركة"
 
 # Markers for the electronic export. It is a finished auction, so its pages say
@@ -85,6 +90,21 @@ E_ONLINE = "يقام المزاد إلكترونيا"               # the contac
 #: the width — Infath's own mark begins at 0.877 on the same footer and must not
 #: be touched. The build erases the ink it finds inside the band, never the band.
 E_FOOTER_MARK = (0.0, 0.91, 0.22, 0.99)
+
+#: What an electronic auction's معلومات التواصل does not have.
+#:
+#: The page is the هجين drawing -- the only one the designer drew for this
+#: layout -- and it names a venue and prints a code to it. An electronic auction
+#: is held nowhere, and the guide's own إلكتروني card (page 24) draws
+#: التاريخ، اسم المنصة، الوقت and no قاعة المزاد block at all.
+#:
+#: Measured on the artwork: the الموقع chip is its icon at x 390.0-409.8,
+#: y 351.8-370.8 over its value at 383.4-416.5, y 380.4-397.7; the قاعة المزاد
+#: block is the code at x 231.4-276.9 beside its caption at 292.8-368.1, both
+#: between y 595.8 and 642.1. Both regions are given room and stop well short of
+#: the two telephone numbers above them.
+E_NO_VENUE_CHIP = (0.640, 0.4146, 0.7038, 0.4751)
+E_NO_VENUE_CODE = (0.3847, 0.7043, 0.6232, 0.7661)
 
 #: معلومات التواصل prints the agent a second time, large, at the top — which is
 #: where the guide puts شعار وكيل البيع, so the company's own mark belongs there
@@ -171,6 +191,21 @@ def _in_person() -> SourceMap:
                        rules="contact_inperson",
                        expect=(CONTACT,), forbid=(PLATFORM,)),
         ),
+        # The two lot pages drawn again for a screen: pages 7 and 8 of this
+        # export, which an earlier reading pruned as duplicate samples of the
+        # layouts above. They are not duplicates. They are «تفاصيل العقار
+        # (نسخة إلكترونية)» -- guide pages 14 and 18 -- with no code under
+        # any chip and the chips in a single column.
+        flavours=(
+            SourcePage(8, R.LOT, "صفحة العقار — قياسي (إلكتروني)",
+                       layout="standard", rules="lot_standard",
+                       flavour=ELECTRONIC,
+                       expect=(EXECUTION, STANDARD), forbid=(CHIP,)),
+            SourcePage(7, R.LOT, "صفحة العقار — برج/عمارة (إلكتروني)",
+                       layout="tower", rules="lot_tower",
+                       flavour=ELECTRONIC,
+                       expect=(EXECUTION,), forbid=(STANDARD, CHIP)),
+        ),
     )
 
 
@@ -181,6 +216,8 @@ def _from_hybrid(
     variant: str,
     standard: int,
     tower: int,
+    standard_screen: int,
+    tower_screen: int,
     chip: bool,
     borrowed: str = "",
     graft: tuple[SourcePage, ...] = (),
@@ -195,6 +232,15 @@ def _from_hybrid(
     the rest still come from the hybrid export, which is what «wherever the
     correct artwork exists» amounts to in practice.
     """
+    # معلومات التواصل is one drawing serving two auctions. A hybrid one is
+    # held somewhere and its card names the venue and prints a code to it; an
+    # electronic one is held nowhere, so both come off and the card is left
+    # with التاريخ، اسم المنصة، الوقت -- the guide's إلكتروني card.
+    screen_only = variant == ELECTRONIC
+    contact_rules = "contact_electronic" if screen_only else "contact"
+    contact_remove = (
+        (E_NO_VENUE_CHIP, E_NO_VENUE_CODE) if screen_only else ()
+    )
     lot_expect = (CHIP,) if chip else ()
     lot_forbid = () if chip else (CHIP,)
     grafted = {p.role: p for p in graft}
@@ -238,8 +284,26 @@ def _from_hybrid(
                            needs_artwork=borrowed)),
             SourcePage(19, R.STEPS, "خطوات المشاركة في المزاد الإلكتروني",
                        rules="steps", expect=(STEPS,)),
-            own(SourcePage(20, R.CONTACT, "معلومات التواصل", rules="contact",
+            own(SourcePage(20, R.CONTACT, "معلومات التواصل",
+                           rules=contact_rules, remove=contact_remove,
                            expect=(CONTACT, PLATFORM))),
+        ),
+        # The same two lot pages drawn for a screen. Both halves of the export
+        # carry them, and these are the electronic half's, matching the lot
+        # pages above. The قياسي one's closing chip is outlined and does not
+        # extract, so it is not asked for -- exactly the case the note at the
+        # top of this file describes.
+        flavours=(
+            SourcePage(standard_screen, R.LOT,
+                       "صفحة العقار — قياسي (إلكتروني)",
+                       layout="standard", rules="lot_standard",
+                       flavour=ELECTRONIC,
+                       expect=(EXECUTION, STANDARD)),
+            SourcePage(tower_screen, R.LOT,
+                       "صفحة العقار — برج/عمارة (إلكتروني)",
+                       layout="tower", rules="lot_tower",
+                       flavour=ELECTRONIC,
+                       expect=(EXECUTION, *lot_expect), forbid=(STANDARD,)),
         ),
     )
 
@@ -258,6 +322,8 @@ MAPS: tuple[SourceMap, ...] = (
         variant="electronic",
         standard=9,
         tower=11,
+        standard_screen=10,
+        tower_screen=12,
         chip=True,
         borrowed=BORROWED,
         # Three pages come from the electronic export, which is a finished sale
@@ -275,14 +341,6 @@ MAPS: tuple[SourceMap, ...] = (
             SourcePage(13, R.TERMS, "شروط الدخول بالمزاد",
                        source=ELECTRONIC_EXPORT, agent_mark=(E_FOOTER_MARK,),
                        expect=(E_TERMS,)),
-            # Its own layout, not the hybrid's. The page reads as four runs but
-            # is three facts: the days on the right, the platform in the middle,
-            # and the hours on the left set as two lines. That is the guide's
-            # electronic card — التاريخ، اسم المنصة، الوقت — and no venue.
-            SourcePage(15, R.CONTACT, "معلومات التواصل",
-                       rules="contact_electronic",
-                       source=ELECTRONIC_EXPORT, agent_mark=(E_FOOTER_MARK, E_CONTACT_MARK),
-                       expect=(CONTACT, E_ONLINE), forbid=(LOCATION,)),
         ),
     ),
     # A hybrid auction accepts electronic bids, so its property pages carry the
@@ -298,6 +356,8 @@ MAPS: tuple[SourceMap, ...] = (
         variant="hybrid",
         standard=9,
         tower=11,
+        standard_screen=10,
+        tower_screen=12,
         chip=True,
     ),
 )

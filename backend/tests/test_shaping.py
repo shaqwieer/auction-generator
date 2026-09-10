@@ -292,3 +292,70 @@ def test_a_long_line_is_not_mistaken_for_a_title():
     reopened.close()
     doc.close()
     assert not any("bold" in name.lower() for name in fonts), fonts
+
+
+# --------------------------------------------------------------------------
+# Which edge a wrapped paragraph starts on.
+
+
+def _line_edges(text: str, rect: tuple[float, ...], **kwargs) -> list[fitz.Rect]:
+    """Every drawn line's box, so an assertion can look at the short one."""
+    doc = fitz.open()
+    page = doc.new_page(width=PAGE[0], height=PAGE[1])
+    calibrated_htmlbox(
+        page, fitz.Rect(*rect), text, registry=brand_registry(), **kwargs
+    )
+    lines = [
+        fitz.Rect(line["bbox"])
+        for block in page.get_text("dict")["blocks"]
+        if block["type"] == 0
+        for line in block["lines"]
+        if any(span["text"].strip() for span in line["spans"])
+    ]
+    doc.close()
+    return lines
+
+
+#: Long enough to wrap and to end on a line far short of the box's width.
+PARAGRAPH = "نبذة عن وكيل البيع " * 9
+
+
+def test_an_arabic_paragraph_starts_on_the_right():
+    """نبذة عن وكيل البيع and نص الإعلان begin at the right of their box.
+
+    Asserted on the *rendered* lines rather than on the CSS, because the
+    keyword and the result do not agree: ``text-align`` is logical to MuPDF's
+    story engine, so under ``dir="rtl"`` asking for ``right`` laid every line
+    against the left edge and the paragraph's short last line hung off the
+    wrong side. ``_RTL_ALIGN`` swaps the two names; if a MuPDF release ever
+    stops needing that, this is what says so.
+
+    A one-line value never showed it — calibration pins its right edge onto the
+    target — so nothing but a wrapping box can catch this.
+    """
+    box = (100.0, 100.0, 450.0, 160.0)
+    lines = _line_edges(PARAGRAPH, box, size_pt=10, align=Align.RIGHT, fit=Fit.WRAP)
+    assert len(lines) >= 3, f"the sample has to wrap: {len(lines)} line(s)"
+    for line in lines:
+        assert abs(line.x1 - box[2]) < 1.0, "every line ends at the box's right edge"
+    short = min(lines, key=lambda r: r.width)
+    assert short.x0 > (box[0] + box[2]) / 2, (
+        "the last line hangs off the right, not the left"
+    )
+
+
+def test_a_latin_run_still_aligns_the_way_css_says():
+    """The three chips on تعريف وكيل البيع are set ``rtl=False``.
+
+    A website, a telephone and an @handle are Latin and are laid out
+    left-to-right, so the swap must not reach them: right means right.
+    """
+    box = (100.0, 100.0, 450.0, 160.0)
+    lines = _line_edges(
+        "www.example.com @aayan_realestate +966 55 000 0000 "
+        "and a second line of the very same sort", box,
+        size_pt=10, align=Align.RIGHT, fit=Fit.WRAP, rtl=False,
+    )
+    assert len(lines) >= 2, "the sample has to wrap"
+    for line in lines:
+        assert abs(line.x1 - box[2]) < 1.0, "every line ends at the box's right edge"

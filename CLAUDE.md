@@ -41,6 +41,18 @@ directory named `alembic` shadows the installed package.
 - **Always place text through `calibrated_htmlbox()`.** A single-pass
   `insert_htmlbox` mis-positions by up to 158pt. The two-pass measure-and-shift
   lands on target to ±0.00pt.
+- **`text-align` is logical to MuPDF's Story engine, so under `dir="rtl"` its
+  two names come out swapped.** Measured: `right` laid every line of an Arabic
+  paragraph against the box's *left* edge and `left` against its right. The
+  engine reads the keyword as start/end, and start is the right edge in a
+  right-to-left paragraph. `_RTL_ALIGN` swaps them, and only when `rtl` — the
+  three Latin chips on تعريف وكيل البيع are `rtl=False` and there the keyword
+  means what CSS says. A single line never showed it, because calibration pins
+  a right-aligned field's rendered right edge onto its target; it is a
+  paragraph that breaks, and نبذة عن وكيل البيع and نص الإعلان wrapped with
+  their short last line hanging off the wrong side.
+  `test_an_arabic_paragraph_starts_on_the_right` asserts the *rendered* line
+  edges, not the CSS, so an upstream fix that stops needing the swap says so.
 - **The designer's file is the template.** We overlay onto their artwork; we
   never re-implement a design in HTML or SVG.
 - Baking a page redacts field spans with `images=PDF_REDACT_IMAGE_NONE` and
@@ -144,6 +156,52 @@ directory named `alembic` shadows the installed package.
   auction-info page, and naming them again here would be asking twice for one
   fact. Resolved at draw time, never copied, so a title corrected on the cover
   corrects this page too.
+- **A fact the booklet says twice is asked for once.** Every field that names
+  one of `compose.BOOKLET_KEYS` — the auction, the platform, the date, the
+  time, the venue — carries `default_value: "{its own key}"`, so it falls back
+  to wherever in the booklet that fact was actually typed. معلومات المزاد and
+  معلومات التواصل print the same four facts, and asking on both was asking
+  twice and letting the answers disagree. Nothing is hidden: the field still
+  stands on every page that prints it and shows the inherited value as its
+  placeholder, so one page can still say something different if the design
+  wants it. `auction_date_block` keeps its own key and inherits `{auction_date}`
+  — the key stays separate because a project-level `auction_date` must not
+  print itself onto the cover.
+- **The brackets in «إختيار مزاد (إسم المزاد)» are the guide marking a place to
+  be filled**, exactly as «شعار وكيل البيع» marks one — not punctuation. The
+  export fills its own sample in between them, so printing them left every
+  booklet reading «إختيار مزاد ( أعيان حائل )». Step 3 keeps its brackets:
+  «(قابلة للإسترداد)» is a parenthetical the guide actually writes.
+- **A caption does not say one word twice across its join.** The fixed wording
+  and the value are one sentence, and «إختيار مزاد » in front of «مزاد أعيان
+  حائل» printed the word twice. The designer's sample avoided it by writing the
+  bare name; a fallback cannot, because the name it falls back to is the whole
+  title. `overlay._joined` folds a repeat of the prefix's last whole word, and
+  only across the join.
+- **A mark beside a value belongs to that value** (`FieldSpec.ornament`).
+  معلومات التواصل draws a handset for رقم التواصل and the WhatsApp bubble for
+  واتساب; only the numbers were fields, so a seller with no WhatsApp printed a
+  WhatsApp mark standing over nothing. Each mark is lifted at build time
+  (`_lift_marks`), erased from the bake, and redrawn only when its value draws
+  — the same act as `_erase_frame`, verified the same way: the redaction must
+  take exactly the shapes captured. `row_group` names the centred row they sit
+  in, and whatever is left of a row re-centres on the extent the designer gave
+  it, so a full row moves not at all. That last part is the check that makes
+  this safe on every booklet: `test_a_full_row_is_the_page_the_designer_drew`.
+- **The two contact chips are واتساب on the right and رقم التواصل on the left.**
+  Each icon sits to the *right* of its own number, so the handset at x=268
+  belongs to the number ending at 254 and the WhatsApp bubble at 422 to the one
+  ending at 309. Listed the other way round the splitter labelled each chip
+  with its neighbour's name, the way «اسم المنصة» once was.
+- **A mark's box is the one thing on a page a client may resize**
+  (`overlay.SIZE_PREFIX`, «width×height» as percentages, keyed by page *and*
+  field). The designer draws the agent's lockup at eighteen sizes through the
+  booklet, sized to a sample mark, and a real one is rarely that shape. Only the
+  box moves: `preserve_aspect` keeps the mark's own proportions inside it, so
+  this cannot stretch a logo — which is why it is offered for a mark and not for
+  a photograph, whose frame the designer drew and whose job is to fill it. The
+  page is in the key because a property's values live on its record and every
+  page of that property reads them.
 - **A caption nobody edits is not a field.** «إستعراض المزادات» and «الفوز
   بالمزاد» are true of every auction, so they carry no field, are never cleared,
   and are the designer's own pixels — measured against the export they diff to
@@ -158,6 +216,62 @@ directory named `alembic` shadows the installed package.
   its closing bracket on a line of its own as soon as the auction's name was
   longer than the sample, so the brackets are bound with U+00A0; the name still
   breaks between its own words, which is where a break belongs.
+- **A lot page is drawn twice, and which one prints is a fact about the
+  output.** «تفاصيل العقار (نسخة الطباعة)» puts a code under each of the four
+  link chips and stands them in a 2x2 block; «(نسخة إلكترونية)» has no codes —
+  a chip on a screen is clicked — and stands them in a single column. Guide
+  pages 14, 18 and 19; both drawings are in the exports, and an earlier reading
+  pruned the screen ones as «duplicate samples». They are not duplicates.
+  `SourceMap.flavours` declares them, they are appended to the built document
+  **last** so no index a booklet already points at moves, they never appear in
+  the builder, and `templates.pages_for_output` swaps them in at render time
+  beside `for_output`. `_qr_slots` cannot find their chips — there are no codes
+  — so `_column_link_fields` finds the bars instead, and the order they are
+  stacked in (survey, photos, lease, map — *not* the block's order) is checked
+  against the live captions where the export sets them as text and against the
+  rank of the drawn caption widths where it outlines them.
+- **A twin is only usable if it asks for exactly what the page it replaces
+  asks for**, and the build refuses one that does not. The برج drawings pass.
+  The قياسي one does not: it is a later revision whose «الأطوال» block is four
+  labelled rows where the printed page has two combined runs, so «شرقاً» and
+  «غرباً» are read twice and the vocabulary pairs المساحة and الاستخدام with
+  the الحدود column beside them. Swapping it would print the area where the
+  north boundary goes, so the printed drawing is used for both outputs and the
+  build says so. Fixing it needs the four length rows keyed to match
+  `lengths_1`/`lengths_2` — a question about how many fields الأطوال should ask
+  for, on both drawings, not about the artwork — or a corrected export. Note
+  while doing it that the قياسي screen drawing stands **three** chips, not
+  four: the designer left معلومات الإيجار off it, where the برج screen drawing
+  keeps all four. So a قياسي property in a screen booklet would lose that chip
+  even once the twin is usable, and that is the designer's decision, not ours.
+- **A chip that is not always printed is cut off the artwork**
+  (`FieldSpec.part`). «معلومات الإيجار» leads to a page the guide only uses «في
+  حال وجود عقود إيجارية للأصل», and a chip is a bar, a caption reversed out of
+  it and an arrow — a raster, some type and a piece of line art, none of which
+  an `ornament` can hold. So the region is cut onto a page of its own inside
+  the background PDF and placed back with `show_pdf_page`, which reproduces all
+  three exactly: measured at **0 differing bytes**. The bar is an *inlined*
+  raster, so no `PDF_REDACT_IMAGE_*` mode removes it — what takes it off is the
+  redaction's own fill, and a fill is a patch unless it is the colour that was
+  already there, so `_chip_ground` samples the ring and the build refuses a
+  chip whose ground it cannot name. Cutting happens **after** the bake, or the
+  cutting drags the sample photograph with it and comes to 22MB.
+- **`for_output` drops a link only where the chip has two halves.**
+  «معلومات الإيجار» leads inside the booklet and is minted no code, so on paper
+  it is a LINK and nothing else — dropped, nothing would know the chip existed
+  and a printed booklet would carry the gap the build cut.
+- **A printed label is design however it is coloured.** The colour-and-size pool
+  `_span_columns` builds now skips `STATIC_HEADINGS` before it looks at size.
+  The chip captions are white on teal, which is what a value looks like on a lot
+  page, and on the screen drawing they are set at 9.8pt — inside the band the
+  closing chip's own parts are matched by. Claimed, they were named «تاريخ إغلاق
+  المزايدة», cleared by the bake, and the page came out with two blank bars.
+- **`SourcePage.remove` is a region this variant's auction does not have.**
+  معلومات التواصل is one drawing serving all three; an electronic auction is
+  held nowhere, so its الموقع chip and its «قاعة المزاد» code come off the page
+  before anything is derived. Nothing draws over them, so the bake would not
+  clear them — the page would print a location pin over nothing and a code to a
+  hall that does not exist.
 - **Rebuilding a template writes the manifest; only `seed.py` puts it in the
   database.** A build without a reseed leaves the API serving the previous
   geometry, and the page renders subtly wrong — a caption wrapping where the
@@ -258,6 +372,17 @@ directory named `alembic` shadows the installed package.
   `app/rendering/messages.py`; API errors are raised inline.
 
 ## UI rules
+- **A preview reads only the photographs the page it is drawing needs.** The
+  builder redraws a page per keystroke, and `assets_for_project` used to load
+  every frame in the booklet before the preview cache was even consulted — a
+  twenty-property issue is several hundred megabytes to draw one page.
+  `generation.LazyAssets` knows the names (which is all the cache key and
+  preflight need) and reads the bytes on demand. The renderer also takes an
+  `image_dpi`: the builder's page is rastered at about 110dpi, so resampling a
+  4032×2268 frame to 300 for it is thrown away a moment later. What the
+  resolution is *judged* against does not move with it — `effective_dpi` and
+  `below_min_dpi` stay measured against print, or every preview would claim the
+  photograph is too coarse.
 - The builder holds the shown page by **position** in the node, not by page
   index. Recolouring a table swaps the page underneath the same node, and
   resetting sent the designer back to the property's first page each time.
@@ -321,7 +446,13 @@ directory named `alembic` shadows the installed package.
   the render, because MuPDF refuses a link to a page not yet made.
 - The lease chip is drawn **only where the lease page is on**: «يتم استخدام
   الصفحة في حال وجود عقود إيجارية للأصل», and a code leading to a page the
-  booklet does not contain is worse than no code.
+  booklet does not contain is worse than no code. Since the chip is cut off the
+  artwork rather than merely unfilled, that rule now holds on **both**
+  composers, and on the older one it holds absolutely: a project with no page
+  plan is composed from the template's sections, no section holds بيان عقود
+  الإيجار, and so those booklets print no lease chip on any property at all.
+  A change from when the chip was baked in and printed regardless of what the
+  booklet contained, and pinned by a test rather than left to be rediscovered.
 - A code prints in the colour the page uses (`spec.color`) on a transparent
   ground — the booklet's are teal and navy, and a white tile would be a patch.
 - The LINK field's rect is the **whole chip**, code and caption together, so a

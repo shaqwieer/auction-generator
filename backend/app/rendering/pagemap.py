@@ -108,6 +108,35 @@ class SourcePage:
     #: band itself. Measured, not guessed, and deliberately nowhere near the
     #: Infath mark on the opposite side of the same footer.
     agent_mark: tuple[tuple[float, float, float, float], ...] = ()
+    #: Regions of this page that this variant does not have, in 0..1 of the
+    #: page, as (x0, y0, x1, y1).
+    #:
+    #: One template's artwork can carry a fact another's auction does not. The
+    #: إلكتروني booklet is drawn on the هجين معلومات التواصل page, which names a
+    #: venue and prints a code to it — and an electronic auction is held
+    #: nowhere. The guide agrees: its إلكتروني card draws التاريخ، اسم المنصة،
+    #: الوقت and no قاعة المزاد at all.
+    #:
+    #: Removing is not the same as leaving a field empty. Nothing draws over
+    #: these, so the bake would not clear them and the page would print a
+    #: location pin over nothing and a code leading to a hall that does not
+    #: exist. Measured off the artwork and stated here, the way ``agent_mark``
+    #: is, because no test can find a thing by its absence.
+    remove: tuple[tuple[float, float, float, float], ...] = ()
+    #: Which output this page is drawn for, where the designer drew two.
+    #:
+    #: The lot pages are drawn twice: once for print, with a QR code under each
+    #: link chip and the four chips in a 2x2 block, and once for a screen, where
+    #: a chip is clicked rather than scanned so it needs no code and the four
+    #: stand in a single column. Guide pages 14 and 18 are «تفاصيل العقار (نسخة
+    #: إلكترونية)» and page 19 «(نسخة الطباعة)»; the exports carry both.
+    #:
+    #: "" is the printed drawing, which is what a booklet uses unless its output
+    #: says otherwise. A page marked "electronic" is not a page of the booklet
+    #: in its own right -- it never appears in the builder and is not a layout
+    #: anyone chooses. It replaces the page of the same role and layout at
+    #: render time, when the output is a screen PDF.
+    flavour: str = ""
     #: Which export this page is cut from, when it is not the map's own.
     #:
     #: A template is normally one export, and this is empty. It is not always:
@@ -134,6 +163,15 @@ class SourceMap:
     #: that a revision renumbered everything.
     source_pages: int
     pages: tuple[SourcePage, ...] = ()
+    #: The same pages drawn for a screen, where the designer drew them twice.
+    #:
+    #: Kept apart from ``pages`` rather than listed among them, and appended to
+    #: the built document last, so that adding them moves no page index a
+    #: booklet already points at -- the same reason the navy summary and the six
+    #: covers are appended rather than inserted. A project freezes the pages a
+    #: property occupies on its node; renumbering them would repoint every
+    #: booklet ever built at the wrong artwork.
+    flavours: tuple[SourcePage, ...] = ()
     covers: tuple[Path, ...] = field(default=())
     #: A distinctive part of the export's filename.
     #:
@@ -144,11 +182,40 @@ class SourceMap:
     #: built, silently, from the other's artwork.
     source: str = ""
 
+    def twin_of(self) -> dict[int, int]:
+        """Which page each flavour twin stands in for.
+
+        Maps the twin's offset in ``flavours`` to the *position* of the page it
+        replaces. A twin is paired by role and layout, which is the pair that
+        names a lot page: «صفحة العقار — قياسي» drawn for print and the same
+        page drawn for a screen.
+
+        Where the twin actually lands in the document is the build's business:
+        it appends them last, after the covers, so the answer is an offset here
+        rather than an index.
+        """
+        default = {
+            (p.role, p.layout): position
+            for position, p in enumerate(self.pages)
+            if not p.flavour
+        }
+        out: dict[int, int] = {}
+        for offset, twin in enumerate(self.flavours):
+            at = default.get((twin.role, twin.layout))
+            if at is None:
+                raise MapError(
+                    f"{self.slug}: {twin.name!r} is drawn for {twin.flavour!r} "
+                    f"but no page of role {twin.role.value!r} and layout "
+                    f"{twin.layout!r} is drawn for print"
+                )
+            out[offset] = at
+        return out
+
     def __post_init__(self) -> None:
         # An index only means anything against the export it indexes, so two
         # pages may share a number as long as they come from different ones.
         seen: set[tuple[str, int]] = set()
-        for page in self.pages:
+        for page in (*self.pages, *self.flavours):
             at = (page.source, page.index)
             if at in seen:
                 where = f" of {page.source}" if page.source else ""
@@ -202,7 +269,7 @@ def assert_map(
     if missing:
         raise MapError(f"{source_map.slug}: no export supplied for {missing}")
 
-    for page in source_map.pages:
+    for page in (*source_map.pages, *source_map.flavours):
         book = others[page.source] if page.source else doc
         if page.index >= book.page_count:
             raise MapError(
