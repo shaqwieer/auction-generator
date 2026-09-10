@@ -31,7 +31,7 @@ SLUGS = (
     "auction_infath_hybrid",
     "auction_infath_electronic",
 )
-LEASE_KEY = "__lease_link"
+LEASE_KEY = "link_lease"
 
 
 def built(slug: str) -> Path:
@@ -82,9 +82,11 @@ def test_the_printed_lot_page_keeps_its_block_of_codes(template):
         codes = chips(template, printed, FieldType.QR)
         links = chips(template, printed, FieldType.LINK)
         assert len(links) == 4, f"page {printed} draws four chips"
-        # Three carry a minted code; «معلومات الإيجار» leads inside the booklet
-        # and a printed code cannot jump to a page.
-        assert len(codes) == 3, f"page {printed} prints three codes"
+        # And a code under every one of them, which is what the designer drew.
+        # «معلومات الإيجار» leads inside the booklet as well, and on screen that
+        # is where it goes -- but a printed code cannot jump to a page, so on
+        # paper it carries the address the client gave for the leases.
+        assert len(codes) == 4, f"page {printed} prints four codes"
         rows = sorted({round(f.rect.y, 2) for f in links})
         columns = sorted({round(f.rect.x, 2) for f in links})
         assert len(rows) == 2 and len(columns) == 2, (

@@ -291,11 +291,16 @@ QR_PREFIX = "__qr_"
 def for_output(fields: list[FieldSpec], flavour: str) -> list[FieldSpec]:
     """Drop the half of each link chip this output does not use.
 
-    Only where there are two halves. «معلومات الإيجار» leads to a page of the
-    booklet rather than out to the web, so it is minted no code and is a LINK
-    and nothing else — dropping it on paper dropped the only thing that knew
-    the chip existed, and with the chip now cut off the artwork that meant a
-    printed booklet with a gap where it should be.
+    Only where there are two halves, and never the half that carries the chip's
+    own drawing. «معلومات الإيجار» is cut off the artwork rather than merely
+    left unfilled, and the cutting hangs on its LINK: dropping it on paper
+    dropped the only thing that knew the chip existed, and that meant a printed
+    booklet with a gap where the build had cut one.
+
+    It has a code of its own now — the designer draws four on that block and
+    this is the fourth — so it is the one chip whose halves both print: the
+    code carries the address the client gave for the property's lease
+    information, and the link leads to where the booklet keeps its leases.
     """
     if flavour != PRINT:
         return [f for f in fields if f.type is not FieldType.QR]
@@ -306,7 +311,7 @@ def for_output(fields: list[FieldSpec], flavour: str) -> list[FieldSpec]:
     }
     return [
         f for f in fields
-        if f.type is not FieldType.LINK or f.key not in coded
+        if f.type is not FieldType.LINK or f.key not in coded or f.part
     ]
 
 

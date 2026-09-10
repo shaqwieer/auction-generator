@@ -286,6 +286,15 @@ class PyMuPDFOverlayRenderer:
         takes it here.
         """
         raw = instance.values.get(spec.key)
+        if spec.type is FieldType.LINK and spec.part is not None:
+            # A chip cut off the artwork is drawn where the booklet puts it,
+            # and nowhere else. «معلومات الإيجار» leads to that property's بيان
+            # عقود الإيجار — «يتم استخدام الصفحة في حال وجود عقود إيجارية
+            # للأصل» — so the booklet placing that page is the whole of what
+            # decides it. The address is a value on the property and outlives
+            # the page being switched off: honoured as a value, it would print
+            # the chip back onto a booklet the build had cut it out of.
+            return instance.values.get(f"{GOTO_PREFIX}{spec.key}") is not None
         value = "" if raw is None else str(raw).strip()
         if value:
             return True

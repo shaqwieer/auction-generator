@@ -188,6 +188,38 @@ directory named `alembic` shadows the installed package.
   in, and whatever is left of a row re-centres on the extent the designer gave
   it, so a full row moves not at all. That last part is the check that makes
   this safe on every booklet: `test_a_full_row_is_the_page_the_designer_drew`.
+- **A row we cut a chip out of is spaced again; a row the designer drew is
+  not.** معلومات التواصل is one drawing serving all three auctions, and an
+  electronic one is held nowhere — so «الموقع» comes off that page before
+  anything is derived from it (`SourcePage.remove`), which left three chips
+  standing at four chips' spacing with the venue's gap still in the middle.
+  `_spread_row` spaces what is left by the chips' *centres*, which is how the
+  row reads: each chip is a mark with its value centred under it, and the eye
+  measures the marks. The outermost two keep the edges the designer gave the
+  row. الهجين draws four and حضوري draws three and both are the designer's own
+  rows — measured against the exports, ours match them chip for chip — so
+  nothing is spaced unless a chip was actually cut out of it. Done at build
+  time, not at render time: on the electronic page «الموقع» is not a field that
+  fails to draw, it is not a field at all, so the renderer's `row_group` cannot
+  know a fourth chip was ever there.
+- **A chip moves with the mark that names it, and leaves its old box behind.**
+  The fact icons sit *above* their values where the telephone icons sit beside
+  them, which is a second way of finding a mark (`_mark_above`) and not a
+  different act. And baking clears the region a field will draw over and
+  nothing else, so a chip that moved printed «الخميس 11 مارس 2024» at the new
+  place and left «وليو 2026» standing at the old one: the boxes a spread
+  vacates are cleared along with the ones it moves into.
+- **Lifting a mark takes one region per mark, with room** (`MARK_BLEED`).
+  `REMOVE_IF_COVERED` measures a stroke by more than the rectangle
+  `get_drawings` reports — the mitred joins of the platform icon's 0.5pt
+  strokes reach past their own bounds, and three of its seven shapes sat out
+  every redaction drawn a point around them, so the icon was recorded, half
+  erased, and drawn again over what was left. Measured on that icon: all of it
+  comes away at five points and nothing more at seven. `REMOVE_IF_TOUCHED`
+  takes all seven at one point of margin but will also take anything that
+  merely crosses the region; this cannot reach past a neighbour to begin with,
+  and the check that erasing took exactly the shapes captured is what makes
+  either safe.
 - **The two contact chips are واتساب on the right and رقم التواصل on the left.**
   Each icon sits to the *right* of its own number, so the handset at x=268
   belongs to the number ending at 254 and the WhatsApp bubble at 422 to the one
@@ -239,7 +271,15 @@ directory named `alembic` shadows the installed package.
   north boundary goes, so the printed drawing is used for both outputs and the
   build says so. Fixing it needs the four length rows keyed to match
   `lengths_1`/`lengths_2` — a question about how many fields الأطوال should ask
-  for, on both drawings, not about the artwork — or a corrected export. Note
+  for, on both drawings, not about the artwork — or a corrected export.
+  Measured since, and it is the export: the printed block is **two runs of one
+  line**, each holding two measurements («35م35م» over «25م25م»), and the
+  screen block is **four runs of one number**, each labelled with its
+  direction. No re-keying makes those ask for the same thing. Two on both means
+  merging four labelled rows into two boxes with the labels stranded beside
+  half of them; four on both means splitting a single text run down the middle
+  by x. Both invent geometry the designer did not draw, so the twin stays
+  refused until a corrected export arrives. Note
   while doing it that the قياسي screen drawing stands **three** chips, not
   four: the designer left معلومات الإيجار off it, where the برج screen drawing
   keeps all four. So a قياسي property in a screen booklet would lose that chip
@@ -256,10 +296,23 @@ directory named `alembic` shadows the installed package.
   already there, so `_chip_ground` samples the ring and the build refuses a
   chip whose ground it cannot name. Cutting happens **after** the bake, or the
   cutting drags the sample photograph with it and comes to 22MB.
-- **`for_output` drops a link only where the chip has two halves.**
-  «معلومات الإيجار» leads inside the booklet and is minted no code, so on paper
-  it is a LINK and nothing else — dropped, nothing would know the chip existed
-  and a printed booklet would carry the gap the build cut.
+- **`for_output` never drops the half that carries a chip's own drawing.**
+  «معلومات الإيجار» is cut off the artwork rather than merely left unfilled, and
+  the cutting hangs on its LINK: dropped, nothing would know the chip existed
+  and a printed booklet would carry the gap the build cut. It is `link_lease`
+  now and has a code of its own — the designer draws four codes on that block
+  and this is the fourth — so it is the one chip whose halves both print. The
+  code carries the address the client gave for the property's leases; the link
+  still leads to where the booklet keeps them.
+- **A cut chip is drawn where the booklet puts it and nowhere else.** «يتم
+  استخدام الصفحة في حال وجود عقود إيجارية للأصل», so the booklet placing that
+  property's بيان عقود الإيجار is the whole of what decides it. Now that the
+  chip has an address, that address is a value on the property and outlives the
+  page being switched off — honoured as a value it would print the chip back
+  onto a booklet the build had cut it out of. `_will_draw` asks a
+  `part`-carrying LINK for the jump alone, and `links.PLACED_KEYS` mints its
+  code only where the jump is set, so an address typed against a switched-off
+  lease page prints neither chip nor code.
 - **A printed label is design however it is coloured.** The colour-and-size pool
   `_span_columns` builds now skips `STATIC_HEADINGS` before it looks at size.
   The chip captions are white on teal, which is what a value looks like on a lot
@@ -283,6 +336,18 @@ directory named `alembic` shadows the installed package.
   `x` is the distance from the **left** edge, so it is placed with a physical
   `left`. `insetInlineStart` resolves to `right` under `dir="rtl"` and mirrors
   every box on the page.
+- **A name that stands beside the mark is set on two lines** (`FieldSpec.two_lines`,
+  broken after its first word). «يكون اسم المزاد على سطرين إذا تم إستخدام
+  الأيقونة يمين الاسم», and on all seven covers the mark stands to the right of
+  the name — so on all seven the name takes two lines. It took one, because a
+  client types «مزاد أعيان حائل» as one line and nothing asked for it to be
+  broken; the demo data only ever looked right because somebody had typed the
+  newline by hand. The break goes after the first word, which is how both of
+  the designer's samples are set — «مزاد» over «أعيان حائل», «مـزاد» over «درة
+  البحر». A break rather than a narrower box: narrowing until the text wraps
+  puts the break wherever the line runs out, and the box a cover gives its
+  title is the designer's, not ours to shrink. A name already broken by hand is
+  left as typed; a single word stays on its line.
 - A cover is one of the six the brand guide draws. There is no seventh, no
   upload, and the export's own cover page (flagged `source_cover`) holds the
   slot without being offered.
@@ -437,16 +502,21 @@ directory named `alembic` shadows the installed package.
 - Each link chip is **two fields**: `link_*` / `platform_link` / `venue_link`
   (LINK, the address a client gives) and `__qr_*` (QR, the minted address).
   `templates.for_output` drops one — paper keeps the code, screen keeps the
-  click. The preview cache key includes the flavour, or switching serves the
-  other one's raster.
+  click — except where the LINK carries the chip's own cutting, which both keep.
+  The preview cache key includes the flavour, or switching serves the other
+  one's raster.
 - On screen the lease chip **jumps to that property's بيان عقود الإيجار** rather
-  than out to the web; on paper the same chip's code still carries the permanent
-  address, because a printed code cannot jump. Only the composer knows the
+  than out to the web; on paper its code carries the permanent address behind
+  whatever the client gave for that property's lease information, because a
+  printed code cannot jump. The jump beats the address wherever both are there:
+  nobody should have to scan a code for a page they are holding. Only the composer knows the
   destination — it is an output page number — and jumps are held to the end of
   the render, because MuPDF refuses a link to a page not yet made.
 - The lease chip is drawn **only where the lease page is on**: «يتم استخدام
-  الصفحة في حال وجود عقود إيجارية للأصل», and a code leading to a page the
-  booklet does not contain is worse than no code. Since the chip is cut off the
+  الصفحة في حال وجود عقود إيجارية للأصل», and a chip leading to a page the
+  booklet does not contain is worse than no chip. The page being on is the
+  whole of what decides it — not the address, which lives on the property and
+  outlives the page being switched off. Since the chip is cut off the
   artwork rather than merely unfilled, that rule now holds on **both**
   composers, and on the older one it holds absolutely: a project with no page
   plan is composed from the template's sections, no section holds بيان عقود
@@ -459,8 +529,7 @@ directory named `alembic` shadows the installed package.
   screen reader has something visible to click. The caption bars are in no
   drawing list, so `_caption_near` reads them off the rendered page: outward to
   the first ink, then across it, bounded by `approach` and stopping at the next
-  code. Ten codes per booklet: four per property page, one on الخطوات, one on
-  التواصل.
+  code. Four codes per property page, plus one on الخطوات and one on التواصل.
 - Set `PUBLIC_BASE_URL` before the first real print run. It is a deployment
   setting and never the request's host: the address on the paper has to keep
   working when the API is reached some other way.

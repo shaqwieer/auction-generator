@@ -150,7 +150,7 @@ OFF = "off"
 #: and the guide only uses that page «في حال وجود عقود إيجارية للأصل». A code
 #: leading to a page the booklet does not contain is worse than no code, so the
 #: chip is drawn only where the page is.
-RENT_LINK_KEY = "__lease_link"
+RENT_LINK_KEY = "link_lease"
 RENT_ROLE = "rent_table"
 
 #: A property's lease contracts, typed row by row on its own lease page. Unlike

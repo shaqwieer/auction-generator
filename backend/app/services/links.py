@@ -29,9 +29,24 @@ LINK_KEYS = (
     "link_survey",
     "link_photos",
     "link_map",
+    "link_lease",
     "platform_link",
     "venue_link",
 )
+
+#: Codes minted only where the booklet actually put the chip they belong to.
+#:
+#: «معلومات الإيجار» is cut off the artwork and drawn back only where that
+#: property's بيان عقود الإيجار is in the booklet -- «يتم استخدام الصفحة في حال
+#: وجود عقود إيجارية للأصل». The address is a value on the property and outlives
+#: the page being switched off, so minting on the address alone would print a
+#: code into the space where the chip is not.
+PLACED_KEYS = ("link_lease",)
+
+#: How the composer marks a chip whose destination is a page of this booklet.
+#: Spelled here as well as in ``compose`` because this is the only thing that
+#: can tell a chip the booklet placed from one it did not.
+GOTO_PREFIX = "__goto_"
 
 #: Keeps the minted address out of the builder: a client supplies where a code
 #: should lead, never the code itself.
@@ -76,6 +91,8 @@ def apply_codes(
         for key in LINK_KEYS:
             target = str(page.values.get(key, "") or "").strip()
             if not target:
+                continue
+            if key in PLACED_KEYS and f"{GOTO_PREFIX}{key}" not in page.values:
                 continue
             link = _mint(session, project, page.record_index, key)
             link.target = target

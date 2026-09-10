@@ -1384,10 +1384,13 @@ def _last_line_box(
 #: ``assert_lot_links`` is the tripwire for an export that reorders them.
 LOT_LINKS: tuple[tuple[str, str], ...] = (
     ("link_survey", "الرفع المساحي"),
-    # Hidden by its prefix: this chip leads to a page of the booklet, and the
-    # booklet knows where that page is. Nothing is asked for and, having no
-    # address, nothing is printed as a code either.
-    ("__lease_link", "معلومات الإيجار"),
+    # An address like the other three, and a code printed like the other three:
+    # the designer draws four codes on this block and this is the fourth. It
+    # also leads to a page of the booklet, and on screen that is where it goes
+    # -- a jump beats an address, because nobody should have to look up a URL
+    # for a page they are holding. On paper a code cannot jump, so it carries
+    # the address the client gave for the property's lease information.
+    ("link_lease", "معلومات الإيجار"),
     ("link_photos", "صور إضافية"),
     ("link_map", "أضغط هنا للوصول للرابط"),
 )
@@ -1411,7 +1414,7 @@ CONTACT_LINKS: tuple[tuple[str, str], ...] = (("venue_link", "قاعة المز�
 LOT_LINKS_COLUMN: tuple[tuple[str, str], ...] = (
     ("link_survey", "الرفع المساحي"),
     ("link_photos", "صور إضافية"),
-    ("__lease_link", "معلومات الإيجار"),
+    ("link_lease", "معلومات الإيجار"),
     ("link_map", "أضغط هنا للوصول للرابط"),
 )
 
@@ -1868,7 +1871,7 @@ def _column_link_fields(
         return []
     named = LOT_LINKS_COLUMN
     if len(bars) == len(named) - 1:
-        named = tuple(n for n in named if n[0] != "__lease_link")
+        named = tuple(n for n in named if n[0] != "link_lease")
     if len(bars) != len(named):
         raise MapError(
             f"page {page.number}: {len(bars)} chips in the column, and the "
@@ -1890,7 +1893,7 @@ def _column_link_fields(
 
 
 #: The key of the one chip a booklet does not always print.
-LEASE_CHIP_KEY = "__lease_link"
+LEASE_CHIP_KEY = "link_lease"
 
 #: How far beside a chip's bar its arrow may sit and still be part of it.
 #: Measured: the printed drawing leaves 5.4pt between the bar and the arrow,

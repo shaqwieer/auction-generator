@@ -21,13 +21,15 @@ from app.rendering import manifest
 from tests.conftest import auth
 
 #: The property chips that carry an address somebody types, and therefore a
-#: printed code. «معلومات الإيجار» is not among them: it leads to a page of the
-#: booklet, so nothing is asked for and nothing is scannable.
-LOT_SLOTS = ("link_survey", "link_photos", "link_map")
-LEASE_SLOT = "__lease_link"
+#: printed code. All four of them: the designer draws a code under every chip
+#: of the block. «معلومات الإيجار» also leads to a page of the booklet, and on
+#: screen that is where it goes — a printed code cannot jump to a page, so on
+#: paper it carries the address instead.
+LOT_SLOTS = ("link_survey", "link_photos", "link_map", "link_lease")
+LEASE_SLOT = "link_lease"
 #: The auction's own two, one per page: where to bid, and where it is held.
 BOOKLET_SLOTS = ("platform_link", "venue_link")
-SLOTS = LOT_SLOTS + BOOKLET_SLOTS + (LEASE_SLOT,)
+SLOTS = LOT_SLOTS + BOOKLET_SLOTS
 
 
 @pytest.fixture(scope="module")
@@ -79,14 +81,18 @@ def test_every_code_in_the_booklet_is_a_field(template):
     and that a property page offers all four.
     """
     offered = {f["key"] for f in template["fields"] if f["type"] == "link"}
-    assert set(LOT_SLOTS) <= offered, "a property page prints three codes"
+    assert set(LOT_SLOTS) <= offered, "a property page prints four codes"
     assert LEASE_SLOT in offered, "the lease chip should still be a chip"
     assert offered <= set(SLOTS), f"unexpected link fields: {offered - set(SLOTS)}"
     assert offered & set(BOOKLET_SLOTS), "the auction's own codes are missing"
 
-    assert not any(
-        f["key"] == f"__qr_{LEASE_SLOT}" for f in template["fields"]
-    ), "a chip that leads to a page of the booklet cannot be a printed code"
+    # The lease chip is the one whose halves both print. Its cutting hangs on
+    # the link, so paper has to keep that as well as the code, or a printed
+    # booklet carries the gap the build cut out of the artwork.
+    assert any(
+        f["key"] == LEASE_SLOT and f["type"] == "link" and f.get("part")
+        for f in template["fields"]
+    ), "the chip's own drawing hangs on its link and has to be there"
 
     # A page drawn for a screen carries chips and no codes at all -- the
     # designer drew the lot pages twice and only one of them is scanned. So the
@@ -95,7 +101,7 @@ def test_every_code_in_the_booklet_is_a_field(template):
     coded = {
         f["page_index"] for f in template["fields"] if f["type"] == "qr"
     }
-    for slot in offered - {LEASE_SLOT}:
+    for slot in offered:
         addresses = [f for f in template["fields"] if f["key"] == slot]
         codes = [f for f in template["fields"] if f["key"] == f"__qr_{slot}"]
         assert all(f["type"] == "link" for f in addresses)
